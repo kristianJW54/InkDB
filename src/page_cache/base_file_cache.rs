@@ -4,8 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::page::base_page::RawPage;
-use crate::page::PageID;
+use crate::page::{PageID, RawPage};
 
 pub struct BaseFileCache {
     cache: Arc<Mutex<HashMap<PageID, Arc<RawPage>>>>, // Keep this for now TODO - We will need a page frame

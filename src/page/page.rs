@@ -11,11 +11,11 @@ pub (crate) struct PageFrame {
 }
 
 impl PageFrame {
-    
+
     pub fn new() -> Self {
         Self { id: PageID(1), dirty: AtomicBool::new(false), inner_page: InnerPage::new() }
     }
-    
+
 }
 
 

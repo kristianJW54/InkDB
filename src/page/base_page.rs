@@ -1,8 +1,17 @@
-use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::page::RawPage;
 
-pub(crate) type RawPage = [u8; 4096];
+
+pub(crate) struct PageHeapOwned {
+    bytes: RawPage,
+}
+
+impl PageHeapOwned {
+    pub fn new() -> Self {
+        Self { bytes: [0u8; 4096] } //TODO Do we want to have in the trait implementation an into which goes into RawPage?
+    }
+}
 
 // We can use this when we need more than closures, for more complex operations
 #[derive(Debug)]
@@ -128,8 +137,6 @@ fn two_threads() {
     }
 
 }
-
-
 
 // We need two page types initially, Heap and Index.
 // We will need a header, slot array and cell
