@@ -25,6 +25,12 @@ impl Deref for SlottedPage {
     }
 }
 
+impl DerefMut for SlottedPage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.bytes
+    }
+}
+
 impl Default for SlottedPage {
     fn default() -> Self { Self { bytes: [0u8; 4096] } }
 }
@@ -37,23 +43,13 @@ impl SlottedPage {
     pub fn get_first_byte(&self) -> usize {
         self.bytes[0] as usize
     }
+
+    // Start of real methods
+
+
+
+
 }
 
-impl DerefMut for SlottedPage {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.bytes
-    }
-}
 
-// #[derive(Debug)]
-// pub(crate) struct SlottedRead<'guard_lifetime> {
-//     bytes: RwLockReadGuard<'guard_lifetime, SlottedPage>,
-// }
-//
-// impl Deref for SlottedRead<'_> {
-//     type Target = RawPage;
-//     fn deref(&self) -> &Self::Target {
-//         &*self.bytes
-//     }
-// }
 

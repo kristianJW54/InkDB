@@ -32,17 +32,6 @@ impl PageFrame {
 
 }
 
-pub(crate) struct PageHeapOwned {
-    bytes: SlottedPage,
-}
-
-impl PageHeapOwned {
-    pub fn new() -> Self {
-        Self { bytes: SlottedPage::default() }
-    }
-}
-
-// We can use this when we need more than closures, for more complex operations
 #[derive(Debug)]
 pub(crate) struct PageReadGuard<'a> {
     latch_read: RwLockReadGuard<'a, SlottedPage>,
@@ -70,6 +59,8 @@ impl <'a> DerefMut for PageWriteGuard<'a> {
 
 
 //------------------------- Page specific types ------------------------------//
+
+// Page types interpret over the slotted page for their type
 
 struct HeapPageRead<'page> {
     data: PageReadGuard<'page>,
@@ -102,9 +93,25 @@ impl <'page> HeapPageMut<'page> {
 }
 
 
+//------------------------- Page Owned specific types ------------------------------//
+
+// Page owned types construct and build before being framed
+
+pub(crate) struct PageHeapOwned {
+    bytes: SlottedPage,
+}
+
+impl PageHeapOwned {
+    pub fn new() -> Self {
+        Self { bytes: SlottedPage::default() }
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use super::*;
 
     // Testing PageFrame API
@@ -123,10 +130,33 @@ mod tests {
     }
 
     #[test]
+    fn holding_the_write() {
+
+        let mut frame = PageFrame::new_frame_from_page(PageID(1), PageType::Leaf, SlottedPage::default());
+
+        let mut write = frame.page_write_guard();
+
+        write.latch_write.mutate_first_byte();
+
+        // Do write work here
+
+        
+
+        //
+
+        let read = frame.page_read_guard();
+
+        drop(read);
+
+
+    }
+
+    #[test]
     fn new_frame() {
         let mut allocated_frame = SlottedPage::default();
         allocated_frame[0] = 1;
-        let frame = PageFrame::new_frame_from_page(PageID(1), PageType::Leaf, SlottedPage::default());
+        let frame = PageFrame::new_frame_from_page(PageID(1), PageType::Leaf, allocated_frame);
+
         assert_eq!(frame.id, PageID(1));
         assert_eq!(frame.page_type, PageType::Leaf);
     }
