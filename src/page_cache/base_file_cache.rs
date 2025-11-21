@@ -9,5 +9,5 @@ use crate::page::base_page::SlottedPage;
 use crate::page::page::PageFrame;
 
 pub struct BaseFileCache {
-    cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
+    pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
 }
