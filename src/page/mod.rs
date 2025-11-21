@@ -1,5 +1,6 @@
 pub mod base_page;
-mod page;
+pub mod page;
+pub mod meta;
 
 pub(crate) type RawPage = [u8; 4096];
 
