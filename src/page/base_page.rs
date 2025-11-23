@@ -46,10 +46,35 @@ impl SlottedPage {
 
     // Start of real methods
 
-
-
-
 }
 
+//--------------------- Header -------------------------//
+
+
+// Header is usually 24 bytes long - Looking at Postgres
+
+// -- Log Sequence Number: 8 bytes
+// -- Checksum: 2 bytes
+// -- Flag bit: 2 bytes
+// -- Slot count: 2 bytes
+// -- Free_start: 2 bytes
+// -- Free_end  : 2 bytes
+// -- Special_start: 2 bytes
+// -- Size and Version: 2 bytes
+// -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
+
+#[repr(C)]
+#[derive(Debug)]
+struct PageHeader {
+    sp_lsn: u64,
+    sp_csm: u16,
+    sp_flg: u16,
+    sp_sc: u16,
+    sp_fs: u16,
+    sp_fe: u16,
+    sp_ss: u16,
+    sp_size_and_version: u16,
+    sp_txid: u32,
+}
 
 
