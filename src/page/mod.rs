@@ -11,9 +11,21 @@ pub(crate) struct PageID(pub u64);
 #[derive(Debug)]
 #[derive(PartialEq)]
 pub(crate) enum PageType {
-    Internal,
-    Leaf,
-    Meta,
+    Undefined = 0xFF,
+    Internal  = 0x01,
+    Leaf      = 0x02,
+    Meta      = 0x03,
+}
+
+impl PageType {
+    pub fn from_byte(byte: u8) -> Self {
+        match byte {
+            0x01 => PageType::Internal,
+            0x02 => PageType::Leaf,
+            0x03 => PageType::Meta,
+            _ => PageType::Undefined,
+        }
+    }
 }
 
 

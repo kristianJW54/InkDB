@@ -11,3 +11,9 @@ use crate::page::page::PageFrame;
 pub struct BaseFileCache {
     pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
 }
+
+impl BaseFileCache {
+    pub fn new() -> Self {
+        Self { cache: Mutex::new(HashMap::new()) }
+    }
+}
