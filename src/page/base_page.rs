@@ -92,28 +92,54 @@ impl SlottedPage {
         let mut buff = [0u8; 4096];
         buff[0..0+LSN_SIZE].copy_from_slice(lsn.to_le_bytes().as_slice());
         let b = page_type as u8;
-        println!("{}", b);
         buff[PAGE_TYPE_OFFSET] = b;
-        println!("{}", PAGE_TYPE_OFFSET);
+
+        // We must set the offsets to a default
+        buff[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE].copy_from_slice((HEADER_SIZE as u16).to_le_bytes().as_slice());
+        buff[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE].copy_from_slice(((PAGE_SIZE - SPECIAL_SIZE) as u16).to_le_bytes().as_slice());
+
         Self { bytes: buff }
 
     }
 
     // Header methods
+
+    pub fn get_header(&self) -> &[u8] {
+        &self.bytes[0..HEADER_SIZE]
+    }
+
     pub fn get_page_type(&self) -> PageType {
         let byte = self.bytes[PAGE_TYPE_OFFSET];
         PageType::from_byte(byte)
     }
 
+    pub fn slot_dir_ref(&self) -> SlotDir<'_> {
+
+        // TODO This needs to be a method
+        let fs_ptr = u16::from_le_bytes(
+            self.bytes[FREE_START_OFFSET .. FREE_START_OFFSET + 2].try_into().unwrap()
+        ) as usize;
+
+        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (HEADER_SIZE - fs_ptr)].as_ref();
+
+        SlotDir { array: sd, }
+    }
+
+
 }
 
 // Slot Array
 
-struct SlotDir<'a> {
+pub struct SlotDir<'a> {
     array: &'a [u8],
 }
 
 // TODO Implement methods on slot dir and iter
+
+
+struct SlotEntry<'slot_dir> {
+    entry: &'slot_dir [u8], // Should be exactly 4 bytes
+}
 
 
 
@@ -128,6 +154,23 @@ mod tests {
         println!("{:?}", page.get_page_type());
 
     }
+
+    #[test]
+    fn slot_dir() {
+
+        let page = SlottedPage::new(123456789, PageType::Internal);
+
+        let header = page.get_header();
+
+        println!("size of header {:?}", header.len());
+
+        let sd = page.slot_dir_ref();
+
+        println!("{:?}", sd.array.len());
+
+    }
+
+
 }
 
 
