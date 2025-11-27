@@ -38,7 +38,7 @@ pub(crate) struct PageReadGuard<'a> {
 }
 
 impl <'a> Deref for PageReadGuard<'a> {
-    type Target = RawPage;
+    type Target = SlottedPage;
     fn deref(&self) -> &Self::Target {
         &*self.latch_read
     }
@@ -49,7 +49,7 @@ pub(crate) struct PageWriteGuard<'a> {
 }
 
 impl <'a> Deref for PageWriteGuard<'a> {
-    type Target = RawPage;
+    type Target = SlottedPage;
     fn deref(&self) -> &Self::Target { &*self.latch_write }
 }
 

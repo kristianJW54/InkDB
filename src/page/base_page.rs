@@ -88,7 +88,7 @@ impl SlottedPage {
     // Start of real methods
 
     //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
-    pub(crate) fn new(lsn: u64, page_type: PageType) -> Self {
+    fn new(lsn: u64, page_type: PageType) -> Self {
         let mut buff = [0u8; 4096];
         buff[0..0+LSN_SIZE].copy_from_slice(lsn.to_le_bytes().as_slice());
         let b = page_type as u8;
@@ -104,25 +104,39 @@ impl SlottedPage {
 
     // Header methods
 
-    pub fn get_header(&self) -> &[u8] {
-        &self.bytes[0..HEADER_SIZE]
-    }
-
-    pub fn get_page_type(&self) -> PageType {
+    fn get_page_type(&self) -> PageType {
         let byte = self.bytes[PAGE_TYPE_OFFSET];
         PageType::from_byte(byte)
     }
 
-    pub fn slot_dir_ref(&self) -> SlotDir<'_> {
+    fn free_start(&self) -> usize {
+        u16::from_le_bytes([
+            self.bytes[FREE_START_OFFSET],
+            self.bytes[FREE_START_OFFSET + 1]
+        ]) as usize
+    }
 
-        // TODO This needs to be a method
-        let fs_ptr = u16::from_le_bytes(
-            self.bytes[FREE_START_OFFSET .. FREE_START_OFFSET + 2].try_into().unwrap()
-        ) as usize;
+    fn free_end(&self) -> usize {
+        u16::from_le_bytes([
+            self.bytes[FREE_END_OFFSET],
+            self.bytes[FREE_END_OFFSET + 1]
+        ]) as usize
+    }
 
+    fn slot_dir_ref(&self) -> SlotDir<'_> {
+
+        let fs_ptr = self.free_start();
+        assert!(fs_ptr >= HEADER_SIZE);
         let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (HEADER_SIZE - fs_ptr)].as_ref();
 
         SlotDir { array: sd, }
+    }
+
+    // Memory Methods
+
+    //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
+    fn get_cell_ref(&self) -> &'_ [u8] {
+        &[0u8] // TODO Finish
     }
 
 
@@ -159,10 +173,6 @@ mod tests {
     fn slot_dir() {
 
         let page = SlottedPage::new(123456789, PageType::Internal);
-
-        let header = page.get_header();
-
-        println!("size of header {:?}", header.len());
 
         let sd = page.slot_dir_ref();
 
