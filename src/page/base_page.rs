@@ -2,11 +2,9 @@
 
 // NOTE: The raw slotted page
 
-use std::marker::PhantomData;
-use std::mem;
+use std::fmt::{Display, Error, Formatter};
 use std::ops::{Deref, DerefMut};
-use std::sync::RwLockReadGuard;
-use crate::page::{PageID, PageType, RawPage};
+use crate::page::{PageID, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -53,6 +51,19 @@ pub const TXID_SIZE: usize = 4;
 
 const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 
+#[derive(Debug, Clone)]
+enum CellError {
+    EmptySlotDir,
+
+}
+
+impl Display for CellError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CellError::EmptySlotDir => { write!(f, "Empty slot dir") }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct SlottedPage {
@@ -135,8 +146,18 @@ impl SlottedPage {
     // Memory Methods
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    fn get_cell_ref(&self) -> &'_ [u8] {
-        &[0u8] // TODO Finish
+    fn get_cell_ref(&self, slot_id: SlotID) -> Result<&'_ [u8], CellError> {
+        // We want to return raw bytes here because we are not concerned with how they are interpreted
+        // it is up to the type layers who request the bytes to parse and process.
+
+        let slot_dir = self.slot_dir_ref();
+        if slot_dir.array.len() == 0 {
+            return Err(CellError::EmptySlotDir);
+        }
+
+        // We need to iterate the slot dir and find the id which will give us the ptr to the offset
+
+        Ok(&[0u8]) // TODO Finish
     }
 
 
@@ -178,6 +199,13 @@ mod tests {
 
         println!("{:?}", sd.array.len());
 
+    }
+
+    #[should_panic]
+    #[test]
+    fn get_cell_error() {
+        let page = SlottedPage::new(123456789, PageType::Internal);
+        page.get_cell_ref(SlotID(0)).unwrap_or_else(|e| panic!("{}", e));
     }
 
 
