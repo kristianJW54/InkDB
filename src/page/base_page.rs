@@ -2,11 +2,9 @@
 
 // NOTE: The raw slotted page
 
-use std::marker::PhantomData;
-use std::mem;
+use std::fmt::{Display, Error, Formatter};
 use std::ops::{Deref, DerefMut};
-use std::sync::RwLockReadGuard;
-use crate::page::{PageID, PageType, RawPage};
+use crate::page::{PageID, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -53,6 +51,19 @@ pub const TXID_SIZE: usize = 4;
 
 const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 
+#[derive(Debug, Clone)]
+enum CellError {
+    EmptySlotDir,
+
+}
+
+impl Display for CellError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CellError::EmptySlotDir => { write!(f, "Empty slot dir") }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct SlottedPage {
@@ -88,32 +99,82 @@ impl SlottedPage {
     // Start of real methods
 
     //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
-    pub(crate) fn new(lsn: u64, page_type: PageType) -> Self {
+    fn new(lsn: u64, page_type: PageType) -> Self {
         let mut buff = [0u8; 4096];
         buff[0..0+LSN_SIZE].copy_from_slice(lsn.to_le_bytes().as_slice());
         let b = page_type as u8;
-        println!("{}", b);
         buff[PAGE_TYPE_OFFSET] = b;
-        println!("{}", PAGE_TYPE_OFFSET);
+
+        // We must set the offsets to a default
+        buff[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE].copy_from_slice((HEADER_SIZE as u16).to_le_bytes().as_slice());
+        buff[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE].copy_from_slice(((PAGE_SIZE - SPECIAL_SIZE) as u16).to_le_bytes().as_slice());
+
         Self { bytes: buff }
 
     }
 
     // Header methods
-    pub fn get_page_type(&self) -> PageType {
+
+    fn get_page_type(&self) -> PageType {
         let byte = self.bytes[PAGE_TYPE_OFFSET];
         PageType::from_byte(byte)
     }
+
+    fn free_start(&self) -> usize {
+        u16::from_le_bytes([
+            self.bytes[FREE_START_OFFSET],
+            self.bytes[FREE_START_OFFSET + 1]
+        ]) as usize
+    }
+
+    fn free_end(&self) -> usize {
+        u16::from_le_bytes([
+            self.bytes[FREE_END_OFFSET],
+            self.bytes[FREE_END_OFFSET + 1]
+        ]) as usize
+    }
+
+    fn slot_dir_ref(&self) -> SlotDir<'_> {
+
+        let fs_ptr = self.free_start();
+        assert!(fs_ptr >= HEADER_SIZE);
+        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (HEADER_SIZE - fs_ptr)].as_ref();
+
+        SlotDir { array: sd, }
+    }
+
+    // Memory Methods
+
+    //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
+    fn get_cell_ref(&self, slot_id: SlotID) -> Result<&'_ [u8], CellError> {
+        // We want to return raw bytes here because we are not concerned with how they are interpreted
+        // it is up to the type layers who request the bytes to parse and process.
+
+        let slot_dir = self.slot_dir_ref();
+        if slot_dir.array.len() == 0 {
+            return Err(CellError::EmptySlotDir);
+        }
+
+        // We need to iterate the slot dir and find the id which will give us the ptr to the offset
+
+        Ok(&[0u8]) // TODO Finish
+    }
+
 
 }
 
 // Slot Array
 
-struct SlotDir<'a> {
+pub struct SlotDir<'a> {
     array: &'a [u8],
 }
 
 // TODO Implement methods on slot dir and iter
+
+
+struct SlotEntry<'slot_dir> {
+    entry: &'slot_dir [u8], // Should be exactly 4 bytes
+}
 
 
 
@@ -128,6 +189,26 @@ mod tests {
         println!("{:?}", page.get_page_type());
 
     }
+
+    #[test]
+    fn slot_dir() {
+
+        let page = SlottedPage::new(123456789, PageType::Internal);
+
+        let sd = page.slot_dir_ref();
+
+        println!("{:?}", sd.array.len());
+
+    }
+
+    #[should_panic]
+    #[test]
+    fn get_cell_error() {
+        let page = SlottedPage::new(123456789, PageType::Internal);
+        page.get_cell_ref(SlotID(0)).unwrap_or_else(|e| panic!("{}", e));
+    }
+
+
 }
 
 

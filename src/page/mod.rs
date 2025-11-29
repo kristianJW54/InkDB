@@ -8,6 +8,9 @@ pub(crate) type RawPage = [u8; 4096];
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub(crate) struct PageID(pub u64);
 
+#[derive(Eq, Hash, PartialEq, Debug)]
+pub(crate) struct SlotID(pub u64);
+
 #[derive(Debug)]
 #[derive(PartialEq)]
 pub(crate) enum PageType {

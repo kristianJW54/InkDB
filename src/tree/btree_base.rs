@@ -38,7 +38,7 @@ impl Cursor<'_> {
 
     fn descend_level(&self, key: &[u8]) -> Result<Arc<PageFrame>, Error> {
 
-        let current = self.current.clone();
+        let current = self.current.clone(); // We are not cloning the page, we are just creating another Arc<Page> ref
 
         let child_ptr = current.page_read_guard(); // TODO Want the API to be current.search_child_ptr()
 
