@@ -5,6 +5,7 @@
 use std::fmt::{Display, Error, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::ptr;
 use crate::page::{read_u16_le, PageID, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
@@ -30,7 +31,8 @@ SLOTTED PAGE is dumb - it only knows how to make structural changes to the unive
 // -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
 
 const PAGE_SIZE: usize = 4096;
-const SLOT_ENTRY_SIZE: usize = 4;
+const ENTRY_SIZE: usize = size_of::<SlotEntry>();
+const ENTRY_SIZE_U16: u16 = ENTRY_SIZE as u16;
 
 pub const LSN_OFFSET: usize = 0;
 pub const LSN_SIZE: usize = 8;
@@ -57,18 +59,6 @@ const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 enum CellError {
     EmptySlotDir,
 
-}
-
-enum SlotError {
-    FailedToInsertSlotEntry, // May need to include reason so add (String)?
-}
-
-impl Display for SlotError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SlotError::FailedToInsertSlotEntry => { write!(f, "Failed to insert slot entry") }
-        }
-    }
 }
 
 impl Display for CellError {
@@ -129,24 +119,48 @@ impl SlottedPage {
 
     // Header methods
 
+    #[inline(always)]
     fn get_page_type(&self) -> PageType {
         let byte = self.bytes[PAGE_TYPE_OFFSET];
         PageType::from_byte(byte)
     }
 
+    #[inline(always)]
     fn free_start(&self) -> usize {
-        // TODO Convert to helper
-        u16::from_le_bytes([
-            self.bytes[FREE_START_OFFSET],
-            self.bytes[FREE_START_OFFSET + 1]
-        ]) as usize
+        let byte = &self.bytes[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE];
+        read_u16_le(byte) as usize
     }
 
+    #[inline(always)]
+    fn increment_free_start(&mut self, bytes: usize) {
+        let cur_fs = self.free_start() as usize;
+        let new_fs = cur_fs + bytes;
+
+        debug_assert!(new_fs <= self.free_end() as usize);
+        debug_assert!(new_fs >= HEADER_SIZE);
+
+        let fs_u16 = new_fs as u16;
+        self.bytes[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE]
+            .copy_from_slice(&fs_u16.to_le_bytes());
+    }
+
+    #[inline(always)]
     fn free_end(&self) -> usize {
-        u16::from_le_bytes([
-            self.bytes[FREE_END_OFFSET],
-            self.bytes[FREE_END_OFFSET + 1]
-        ]) as usize
+        let byte = &self.bytes[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE];
+        read_u16_le(byte) as usize
+    }
+
+    #[inline(always)]
+    fn free_contiguous_space(&self) -> usize {
+        self.free_end() - self.free_start()
+    }
+
+    #[inline]
+    fn free_fragmented_space(&self) -> usize {
+
+        // NOTE: We must iterate slot entries and gather the length of entries which are deleted
+
+        0
     }
 
     // Slot Dir Methods
@@ -155,7 +169,7 @@ impl SlottedPage {
 
         let fs = self.free_start();
         assert!(fs >= HEADER_SIZE);
-        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (HEADER_SIZE - fs)].as_ref();
+        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (fs - HEADER_SIZE)].as_ref();
 
         //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
         // page which indexing into the bytes of the page returning the offset which is correct and in bounds
@@ -166,8 +180,26 @@ impl SlottedPage {
     }
 
     // TODO Finish
-    fn insert_slot_entry(&mut self) -> Result<(), SlotError> {
+    //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
+    // to insert a slot_entry
+    fn insert_slot_entry(&mut self, size: u16, offset: u16) -> Result<(), Error> {
 
+        let fs = self.free_start();
+        // Get pointer to the start of free space
+        let mut ptr = self.bytes.as_mut_ptr().wrapping_add(fs);
+
+        //SAFETY: We know we have valid page space of [u8;4096] this will not fail. However, it is up to the caller
+        // for page interpretation and correctness that the space we write is valid free space
+        //SAFETY: We call this in a mut self method meaning we have exclusive access to the page
+        unsafe {
+            let ptr_s = size.to_le_bytes().as_ptr();
+            let ptr_o = offset.to_le_bytes().as_ptr();
+
+            ptr::copy_nonoverlapping(ptr_s, ptr, 2);
+            ptr::copy_nonoverlapping(ptr_o, ptr.add(2), 2);
+        }
+
+        self.increment_free_start(ENTRY_SIZE);
 
         Ok(())
     }
@@ -194,6 +226,7 @@ impl SlottedPage {
 
 // Slot Array
 
+#[derive(Debug)]
 pub struct SlotRef<'a> {
     start: *const u8, // Ptr to the start of the slot_dir
     size: usize,
@@ -251,13 +284,22 @@ mod tests {
     #[test]
     fn slot_dir() {
 
-        let page = SlottedPage::new(123456789, PageType::Internal);
+        let mut page = SlottedPage::new(123456789, PageType::Internal);
 
         let sd = page.slot_dir_ref();
 
         println!("slot dir size = {}", sd.size);
 
-        println!("size of slot entry = {}", mem::size_of::<SlotEntry>());
+        page.insert_slot_entry(100, 12).unwrap();
+
+        let sd = page.slot_dir_ref();
+        //
+        println!("slot dir size = {}", sd.size);
+
+        let size = read_u16_le(&page.bytes[24..24+2]);
+        let offset = read_u16_le(&page.bytes[26..26+2]);
+
+        println!("size = {}, offset = {}", size, offset);
 
         // TODO Continue test
 
