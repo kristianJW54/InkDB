@@ -3,8 +3,9 @@
 // NOTE: The raw slotted page
 
 use std::fmt::{Display, Error, Formatter};
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use crate::page::{PageID, PageType, RawPage, SlotID};
+use crate::page::{read_u16_le, PageID, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -29,6 +30,7 @@ SLOTTED PAGE is dumb - it only knows how to make structural changes to the unive
 // -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
 
 const PAGE_SIZE: usize = 4096;
+const SLOT_ENTRY_SIZE: usize = 4;
 
 pub const LSN_OFFSET: usize = 0;
 pub const LSN_SIZE: usize = 8;
@@ -55,6 +57,18 @@ const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 enum CellError {
     EmptySlotDir,
 
+}
+
+enum SlotError {
+    FailedToInsertSlotEntry, // May need to include reason so add (String)?
+}
+
+impl Display for SlotError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SlotError::FailedToInsertSlotEntry => { write!(f, "Failed to insert slot entry") }
+        }
+    }
 }
 
 impl Display for CellError {
@@ -121,6 +135,7 @@ impl SlottedPage {
     }
 
     fn free_start(&self) -> usize {
+        // TODO Convert to helper
         u16::from_le_bytes([
             self.bytes[FREE_START_OFFSET],
             self.bytes[FREE_START_OFFSET + 1]
@@ -134,13 +149,27 @@ impl SlottedPage {
         ]) as usize
     }
 
-    fn slot_dir_ref(&self) -> SlotDir<'_> {
+    // Slot Dir Methods
 
-        let fs_ptr = self.free_start();
-        assert!(fs_ptr >= HEADER_SIZE);
-        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (HEADER_SIZE - fs_ptr)].as_ref();
+    fn slot_dir_ref(&self) -> SlotRef<'_> {
 
-        SlotDir { array: sd, }
+        let fs = self.free_start();
+        assert!(fs >= HEADER_SIZE);
+        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (HEADER_SIZE - fs)].as_ref();
+
+        //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
+        // page which indexing into the bytes of the page returning the offset which is correct and in bounds
+        let fs_ptr = unsafe { self.bytes.as_ptr().add(fs) };
+
+        SlotRef::new(fs_ptr, fs - HEADER_SIZE)
+
+    }
+
+    // TODO Finish
+    fn insert_slot_entry(&mut self) -> Result<(), SlotError> {
+
+
+        Ok(())
     }
 
     // Memory Methods
@@ -151,7 +180,7 @@ impl SlottedPage {
         // it is up to the type layers who request the bytes to parse and process.
 
         let slot_dir = self.slot_dir_ref();
-        if slot_dir.array.len() == 0 {
+        if slot_dir.size - HEADER_SIZE <= 0 {
             return Err(CellError::EmptySlotDir);
         }
 
@@ -165,21 +194,50 @@ impl SlottedPage {
 
 // Slot Array
 
-pub struct SlotDir<'a> {
-    array: &'a [u8],
+pub struct SlotRef<'a> {
+    start: *const u8, // Ptr to the start of the slot_dir
+    size: usize,
+    pos: usize,
+    _marker: PhantomData<&'a u8>, // For lifetime
 }
 
 // TODO Implement methods on slot dir and iter
 
+impl SlotRef<'_> {
 
-struct SlotEntry<'slot_dir> {
-    entry: &'slot_dir [u8], // Should be exactly 4 bytes
+    // This isn't unsafe yet because we are only storing a raw const pointer and not aliasing or dereferencing
+    fn new(start: *const u8, size: usize) -> Self {
+        Self { start, size, pos: 0, _marker: PhantomData }
+    }
+
+    fn slot_count(&self) -> usize {
+        self.size / size_of::<SlotEntry>()
+    }
+
+    // NOTE: Why do we need an index and how can we be more concise
+    // fn next_entry(&mut self) -> SlotEntry {
+    //
+    //
+    //
+    //
+    // }
+
+
+
+
+}
+
+
+struct SlotEntry {
+    offset: u16,
+    length: u16,
 }
 
 
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
     use super::*;
 
     #[test]
@@ -197,7 +255,11 @@ mod tests {
 
         let sd = page.slot_dir_ref();
 
-        println!("{:?}", sd.array.len());
+        println!("slot dir size = {}", sd.size);
+
+        println!("size of slot entry = {}", mem::size_of::<SlotEntry>());
+
+        // TODO Continue test
 
     }
 

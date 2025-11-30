@@ -2,6 +2,14 @@ pub mod base_page;
 pub mod page;
 pub mod meta;
 
+
+#[inline]
+pub(crate) fn read_u16_le(bytes: &[u8]) -> u16 {
+    let mut buf = [0u8; 2];
+    buf.copy_from_slice(&bytes[..2]);
+    u16::from_le_bytes(buf)
+}
+
 pub(crate) type RawPage = [u8; 4096];
 
 
