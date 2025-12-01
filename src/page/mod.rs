@@ -10,6 +10,11 @@ pub(crate) fn read_u16_le(bytes: &[u8]) -> u16 {
     u16::from_le_bytes(buf)
 }
 
+#[inline]
+pub(crate) unsafe fn read_u16_le_unsafe(ptr: *const u8) -> u16 {
+    u16::from_le_bytes([*ptr, *ptr.add(1)])
+}
+
 pub(crate) type RawPage = [u8; 4096];
 
 

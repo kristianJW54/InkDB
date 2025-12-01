@@ -6,7 +6,7 @@ use std::fmt::{Display, Error, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
-use crate::page::{read_u16_le, PageID, PageType, RawPage, SlotID};
+use crate::page::{read_u16_le, read_u16_le_unsafe, PageID, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -146,8 +146,10 @@ impl SlottedPage {
 
     #[inline(always)]
     fn free_end(&self) -> usize {
-        let byte = &self.bytes[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE];
-        read_u16_le(byte) as usize
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
+            read_u16_le_unsafe(ptr) as usize
+        }
     }
 
     #[inline(always)]
@@ -169,13 +171,11 @@ impl SlottedPage {
 
         let fs = self.free_start();
         assert!(fs >= HEADER_SIZE);
-        let sd = self.bytes[HEADER_SIZE..HEADER_SIZE + (fs - HEADER_SIZE)].as_ref();
-
         //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
         // page which indexing into the bytes of the page returning the offset which is correct and in bounds
-        let fs_ptr = unsafe { self.bytes.as_ptr().add(fs) };
+        let sd_ptr = unsafe { self.bytes.as_ptr().add(HEADER_SIZE) };
 
-        SlotRef::new(fs_ptr, fs - HEADER_SIZE)
+        SlotRef::new(sd_ptr, fs - HEADER_SIZE)
 
     }
 
@@ -230,42 +230,87 @@ impl SlottedPage {
 pub struct SlotRef<'a> {
     start: *const u8, // Ptr to the start of the slot_dir
     size: usize,
-    pos: usize,
     _marker: PhantomData<&'a u8>, // For lifetime
 }
 
 // TODO Implement methods on slot dir and iter
 
-impl SlotRef<'_> {
+impl<'a> SlotRef<'a> {
 
     // This isn't unsafe yet because we are only storing a raw const pointer and not aliasing or dereferencing
     fn new(start: *const u8, size: usize) -> Self {
-        Self { start, size, pos: 0, _marker: PhantomData }
+        Self { start, size, _marker: PhantomData }
     }
 
     fn slot_count(&self) -> usize {
         self.size / size_of::<SlotEntry>()
     }
 
-    // NOTE: Why do we need an index and how can we be more concise
-    // fn next_entry(&mut self) -> SlotEntry {
-    //
-    //
-    //
-    //
-    // }
-
-
+    fn iter(&self) -> SlotDirIter<'_> {
+        SlotDirIter::new(self.start, self.size)
+    }
 
 
 }
 
 
+#[derive(Debug)]
 struct SlotEntry {
-    offset: u16,
     length: u16,
+    offset: u16,
 }
 
+struct SlotDirIter<'a> {
+    ptr: *const u8,
+    size: usize,
+    pos: usize,
+    _marker: PhantomData<&'a u8>,
+}
+
+impl SlotDirIter<'_> {
+    fn new(ptr: *const u8, size: usize) -> Self {
+        Self { ptr, size, pos: 0, _marker: PhantomData }
+    }
+
+    #[inline(always)]
+    fn slot_count(&self) -> usize {
+        self.size / ENTRY_SIZE
+    }
+
+    fn next_entry(&mut self) -> Option<SlotEntry> {
+
+        // We return a SlotEntry because we must take the bytes and give back primitives which we can use
+        // to compare and find cells with
+
+        // We need to assert that index is within bounds of slot_dir entries
+        if self.pos >= self.slot_count() {
+            return None;
+        }
+
+        unsafe {
+            // TODO Add safety note
+            // Start is pointer in the page at the position of the last entry which we advance by ENTRY_SIZE
+            let start = self.ptr.add(self.pos * ENTRY_SIZE);
+
+            let length = read_u16_le_unsafe(start);
+            let offset = read_u16_le_unsafe(start.add(2));
+
+            self.pos += 1;
+            println!("pos = {}", self.pos);
+
+            println!("offset {}, length {}", offset, length);
+
+            Some(SlotEntry { length, offset })
+        }
+    }
+}
+
+impl<'a> Iterator for SlotDirIter<'a> {
+    type Item = SlotEntry;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_entry()
+    }
+}
 
 
 #[cfg(test)]
@@ -291,15 +336,12 @@ mod tests {
         println!("slot dir size = {}", sd.size);
 
         page.insert_slot_entry(100, 12).unwrap();
+        page.insert_slot_entry(200, 21).unwrap();
+        page.insert_slot_entry(300, 22).unwrap();
 
-        let sd = page.slot_dir_ref();
-        //
-        println!("slot dir size = {}", sd.size);
-
-        let size = read_u16_le(&page.bytes[24..24+2]);
-        let offset = read_u16_le(&page.bytes[26..26+2]);
-
-        println!("size = {}, offset = {}", size, offset);
+        for i in page.slot_dir_ref().iter() {
+            println!("{:?}", i);
+        }
 
         // TODO Continue test
 
