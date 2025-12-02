@@ -54,17 +54,21 @@ pub const TXID_OFFSET: usize = SIZE_VERSION_OFFSET + SIZE_VERSION_SIZE;
 pub const TXID_SIZE: usize = 4;
 
 const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
+const HEADER_SIZE_U16: u16 = HEADER_SIZE as u16;
 
 #[derive(Debug, Clone)]
 enum CellError {
     EmptySlotDir,
-
+    SlotIDOutOfBounds,
+    CorruptCell,
 }
 
 impl Display for CellError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             CellError::EmptySlotDir => { write!(f, "Empty slot dir") }
+            CellError::SlotIDOutOfBounds => { write!(f, "SlotID out of bounds") }
+            CellError::CorruptCell => { write!(f, "Corrupt cell") }
         }
     }
 }
@@ -105,6 +109,8 @@ impl SlottedPage {
     //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
     fn new(lsn: u64, page_type: PageType) -> Self {
         let mut buff = [0u8; 4096];
+        let b_ptr = buff.as_mut_ptr();
+
         buff[0..0+LSN_SIZE].copy_from_slice(lsn.to_le_bytes().as_slice());
         let b = page_type as u8;
         buff[PAGE_TYPE_OFFSET] = b;
@@ -140,8 +146,10 @@ impl SlottedPage {
         debug_assert!(new_fs >= HEADER_SIZE);
 
         let fs_u16 = new_fs as u16;
+
         self.bytes[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE]
             .copy_from_slice(&fs_u16.to_le_bytes());
+
     }
 
     #[inline(always)]
@@ -212,13 +220,34 @@ impl SlottedPage {
         // it is up to the type layers who request the bytes to parse and process.
 
         let slot_dir = self.slot_dir_ref();
-        if slot_dir.size - HEADER_SIZE <= 0 {
+        if slot_dir.size == 0 {
             return Err(CellError::EmptySlotDir);
         }
 
-        // We need to iterate the slot dir and find the id which will give us the ptr to the offset
+        let idx = slot_id.0 as usize;
+        let index_offset = idx * ENTRY_SIZE;
+        if idx > slot_dir.slot_count() {
+            return Err(CellError::SlotIDOutOfBounds)
+        }
 
-        Ok(&[0u8]) // TODO Finish
+        // TODO Add safety notes and also debug asserts
+
+        unsafe {
+
+            let base = slot_dir.ptr.add(index_offset);
+
+            let offset = read_u16_le_unsafe(base) as usize;
+            let length = read_u16_le_unsafe(base.add(2)) as usize;
+
+            let end = offset + length;
+
+            if end > PAGE_SIZE {
+                return Err(CellError::CorruptCell)
+            }
+
+            return Ok(self.bytes[offset..end].as_ref());
+
+        }
     }
 
 
@@ -228,7 +257,7 @@ impl SlottedPage {
 
 #[derive(Debug)]
 pub struct SlotRef<'a> {
-    start: *const u8, // Ptr to the start of the slot_dir
+    ptr: *const u8, // Ptr to the start of the slot_dir
     size: usize,
     _marker: PhantomData<&'a u8>, // For lifetime
 }
@@ -239,15 +268,18 @@ impl<'a> SlotRef<'a> {
 
     // This isn't unsafe yet because we are only storing a raw const pointer and not aliasing or dereferencing
     fn new(start: *const u8, size: usize) -> Self {
-        Self { start, size, _marker: PhantomData }
+        Self { ptr: start, size, _marker: PhantomData }
     }
 
     fn slot_count(&self) -> usize {
+        if self.size == 0 {
+            return 0;
+        }
         self.size / size_of::<SlotEntry>()
     }
 
     fn iter(&self) -> SlotDirIter<'_> {
-        SlotDirIter::new(self.start, self.size)
+        SlotDirIter::new(self.ptr, self.size)
     }
 
 
@@ -342,6 +374,9 @@ mod tests {
         for i in page.slot_dir_ref().iter() {
             println!("{:?}", i);
         }
+
+        let result = page.get_cell_ref(SlotID(0)).unwrap();
+        println!("result -> {:?}", result.len());
 
         // TODO Continue test
 
