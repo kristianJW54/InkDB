@@ -126,7 +126,7 @@ impl SlottedPage {
     // Header methods
 
     #[inline(always)]
-    fn get_page_type(&self) -> PageType {
+    pub(crate) fn get_page_type(&self) -> PageType {
         let byte = self.bytes[PAGE_TYPE_OFFSET];
         PageType::from_byte(byte)
     }
@@ -187,9 +187,9 @@ impl SlottedPage {
 
     }
 
-    // TODO Finish
     //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
     // to insert a slot_entry
+    //NOTE: Do we need to pass in u16 or if this is called after inserting row data can we pass in ptr?
     fn insert_slot_entry(&mut self, size: u16, offset: u16) -> Result<(), Error> {
 
         let fs = self.free_start();

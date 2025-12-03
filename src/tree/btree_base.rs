@@ -3,7 +3,7 @@ use std::io::{Error, ErrorKind};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 use crate::page::page::PageFrame;
-use crate::page::PageID;
+use crate::page::{PageID, PageType};
 use crate::transaction::tx_memory::TxMemory;
 // Btree base structure and heavy lifting
 
@@ -36,18 +36,28 @@ impl Cursor<'_> {
 
     // TODO Build descend methods - think about different things we would need to do in there like siblings, splits, etc and also think about page semantics
 
-    fn descend_level(&self, key: &[u8]) -> Result<Arc<PageFrame>, Error> {
+    fn descend_level(&self, key: &[u8]) -> Result<Option<Arc<PageFrame>>, Error> {
+
+        // At the moment I'm not using page specific type? Do we want to here?
 
         let current = self.current.clone(); // We are not cloning the page, we are just creating another Arc<Page> ref
+        // I think we wrap current in the
 
-        let child_ptr = current.page_read_guard(); // TODO Want the API to be current.search_child_ptr()
-
+        match current.page_type() {
+            PageType::Meta => {},
+            PageType::Internal => {
+                let guard = current.page_read_guard();
+                // Need to then wrap the guard in the InternalPage specific type to find the child_ptr
+            },
+            PageType::Leaf => {},
+            PageType::Undefined => { return Err(Error::new(ErrorKind::Other, "page not found")); },
+        }
 
 
         Err(Error::new(ErrorKind::Other, "level not found"))
     }
 
-
+    // NOTE: What type of storing do we want? Data in cells? Index table with pointer (Indirection)
 
 }
 

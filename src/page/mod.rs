@@ -26,6 +26,7 @@ pub(crate) struct SlotID(pub u16);
 
 #[derive(Debug)]
 #[derive(PartialEq)]
+#[derive(Clone, Copy)]
 pub(crate) enum PageType {
     Undefined = 0xFF,
     Internal  = 0x01,

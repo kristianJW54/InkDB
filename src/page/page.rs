@@ -1,3 +1,4 @@
+use std::fmt::Error;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicBool;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -27,6 +28,10 @@ impl PageFrame {
 
     pub(crate) fn page_write_guard<'page>(&self) -> PageWriteGuard<'_> {
         PageWriteGuard { latch_write: self.inner_page.write().unwrap() }
+    }
+
+    pub(crate) fn page_type(&self) -> PageType {
+        self.page_type
     }
 
 
@@ -62,13 +67,13 @@ impl <'a> DerefMut for PageWriteGuard<'a> {
 
 // Page types interpret over the slotted page for their type
 
-struct HeapPageRead<'page> {
+pub(crate) struct LeafPageRead<'page> {
     data: PageReadGuard<'page>,
 }
 
-impl <'page> HeapPageRead<'page> {
+impl <'page> LeafPageRead<'page> {
 
-    fn from_guard(guard: PageReadGuard<'page>) -> Self {
+    pub(crate) fn from_guard(guard: PageReadGuard<'page>) -> Self {
         Self { data: guard }
     }
 
@@ -78,18 +83,32 @@ impl <'page> HeapPageRead<'page> {
 
 }
 
-struct HeapPageMut<'page> {
+pub(crate) struct LeafPageMut<'page> {
     data: PageWriteGuard<'page>,
 }
 
-impl <'page> HeapPageMut<'page> {
-    fn from_guard(guard: PageWriteGuard<'page>) -> Self {
+impl <'page> LeafPageMut<'page> {
+    pub(crate) fn from_guard(guard: PageWriteGuard<'page>) -> Self {
         Self { data: guard }
     }
 
     fn write_first_byte(&mut self, byte: u8) {
         self.data[0] = byte;
     }
+}
+
+pub(crate) struct InternalPageRef<'page> {
+    data: PageReadGuard<'page>,
+}
+
+impl <'page> InternalPageRef<'page> {
+    pub(crate) fn from_guard(guard: PageReadGuard<'page>) -> Self { Self { data: guard } }
+
+    pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<&[u8], Error> {
+        let page = self.data.as_ref(); // NOTE: How do we just access the slotted page methods?
+        todo!("finish find_child_ptr")
+    }
+
 }
 
 
@@ -175,7 +194,7 @@ mod tests {
 
         let p1 = page.clone();
         let thread1 = std::thread::spawn(move || {
-            let b = HeapPageRead::from_guard(p1.page_read_guard()).get_first_byte();
+            let b = LeafPageRead::from_guard(p1.page_read_guard()).get_first_byte();
             println!("first byte: {}", b);
         });
 
@@ -184,10 +203,10 @@ mod tests {
         let p2 = page.clone();
         let thread2 = std::thread::spawn(move || {
 
-            let w = HeapPageMut::from_guard(p2.page_write_guard()).write_first_byte(2);
-            println!("first byte: {}", HeapPageRead::from_guard(p2.page_read_guard()).get_first_byte());
+            let w = LeafPageMut::from_guard(p2.page_write_guard()).write_first_byte(2);
+            println!("first byte: {}", LeafPageRead::from_guard(p2.page_read_guard()).get_first_byte());
 
-            let b = HeapPageRead::from_guard(p2.page_read_guard()).get_first_byte();
+            let b = LeafPageRead::from_guard(p2.page_read_guard()).get_first_byte();
             println!("first byte: {}", b);
         });
 
