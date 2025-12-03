@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::page::{PageID};
-use crate::page::page::PageFrame;
+use crate::page::page_frame::PageFrame;
 
 pub struct BaseFileCache {
     pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,

@@ -1,7 +1,7 @@
-pub mod base_page;
-pub mod page;
+pub mod raw_page;
+pub mod page_frame;
 pub mod meta;
-
+pub mod index_page;
 
 #[inline]
 pub(crate) fn read_u16_le(bytes: &[u8]) -> u16 {
@@ -17,33 +17,30 @@ pub(crate) unsafe fn read_u16_le_unsafe(ptr: *const u8) -> u16 {
 
 pub(crate) type RawPage = [u8; 4096];
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PageType {
+    Heap = 0x01,
+    Index = 0x02,
+    Meta = 0x03,
+    Undefined = 0xFF,
+}
+
+impl PageType {
+    pub(crate) fn from_byte(byte: u8) -> Self {
+        match byte {
+            0x01 => PageType::Heap,
+            0x02 => PageType::Index,
+            0x03 => PageType::Meta,
+            _ => PageType::Undefined,
+        }
+    }
+}
 
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub(crate) struct PageID(pub u64);
 
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub(crate) struct SlotID(pub u16);
-
-#[derive(Debug)]
-#[derive(PartialEq)]
-#[derive(Clone, Copy)]
-pub(crate) enum PageType {
-    Undefined = 0xFF,
-    Internal  = 0x01,
-    Leaf      = 0x02,
-    Meta      = 0x03,
-}
-
-impl PageType {
-    pub fn from_byte(byte: u8) -> Self {
-        match byte {
-            0x01 => PageType::Internal,
-            0x02 => PageType::Leaf,
-            0x03 => PageType::Meta,
-            _ => PageType::Undefined,
-        }
-    }
-}
 
 
 // TODO - Have mod tests for all files within

@@ -2,8 +2,10 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
-use crate::page::page::PageFrame;
+use crate::page::page_frame::PageFrame;
 use crate::page::{PageID, PageType};
+use crate::page::index_page::{IndexPageRef, IndexRole};
+use crate::page::PageType::Index;
 use crate::transaction::tx_memory::TxMemory;
 // Btree base structure and heavy lifting
 
@@ -44,13 +46,19 @@ impl Cursor<'_> {
         // I think we wrap current in the
 
         match current.page_type() {
-            PageType::Meta => {},
-            PageType::Internal => {
+            PageType::Index => {
                 let guard = current.page_read_guard();
-                // Need to then wrap the guard in the InternalPage specific type to find the child_ptr
+                let index_page = IndexPageRef::from_guard(guard);
+                // Need to match on the index page type
+                match index_page.get_index_type() {
+                    IndexRole::Internal => {
+                        let child_ptr = index_page.find_child_ptr(key);
+                        // TODO Continue here...
+                    },
+                    _ => {},
+                }
             },
-            PageType::Leaf => {},
-            PageType::Undefined => { return Err(Error::new(ErrorKind::Other, "page not found")); },
+            _ => {},
         }
 
 
