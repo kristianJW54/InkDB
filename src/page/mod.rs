@@ -1,3 +1,5 @@
+use std::ptr;
+
 pub mod raw_page;
 pub mod page_frame;
 pub mod meta;
@@ -11,13 +13,65 @@ pub(crate) fn read_u16_le(bytes: &[u8]) -> u16 {
 }
 
 #[inline]
+pub(crate) fn write_u16_le(bytes: &mut [u8], value: u16) {
+    bytes[..2].copy_from_slice(&value.to_le_bytes());
+}
+
+#[inline]
 pub(crate) unsafe fn read_u16_le_unsafe(ptr: *const u8) -> u16 {
     u16::from_le_bytes([*ptr, *ptr.add(1)])
 }
 
+#[inline]
+pub(crate) unsafe fn write_u16_le_unsafe(b_ptr: *mut u8, value: u16) {
+    let bytes = value.to_le_bytes();
+    ptr::copy_nonoverlapping(bytes.as_ptr(), b_ptr, 2);
+}
+
 pub(crate) type RawPage = [u8; 4096];
 
-#[derive(Clone, Copy, Debug)]
+
+// ------------- Page Bit Type Masks --------------- //
+
+/*
+    bits 7 6 5 4 | 3 2 1 0
+    -------------+---------
+       subtype   | page_type
+*/
+
+pub(super) const PAGE_TYPE_MASK: u8 = 0b0000_1111;
+pub(super) const SUBTYPE_MASK:   u8 = 0b1111_0000;
+
+pub(super) const PAGE_KIND_HEAP:  u8 = 0;
+pub(super) const PAGE_KIND_INDEX: u8 = 1;
+pub(super) const PAGE_KIND_META:  u8 = 2;
+pub(super) const PAGE_KIND_FREE:  u8 = 3;
+// 16 Page types...if needed
+
+pub(super) fn page_type_bits(pt: u8) -> u8 {
+    pt & PAGE_TYPE_MASK
+}
+pub(super) fn page_sub_type_bits(pst: u8) -> u8 {
+    // We shift it back here because we have cleared the page_type range and can now 'convert' the high bits
+    // back to normal numbers
+    (pst & SUBTYPE_MASK) >> 4
+}
+// TODO Add the create mask function
+
+#[test]
+fn test_page_type_bits() {
+
+    let basic_pt: u8 = 200;
+
+    println!("{:08b}", page_type_bits(basic_pt));
+
+}
+
+
+
+
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PageType {
     Heap = 0x01,
     Index = 0x02,

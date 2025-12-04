@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 use crate::page::page_frame::PageFrame;
 use crate::page::{PageID, PageType};
-use crate::page::index_page::{IndexPageRef, IndexRole};
+use crate::page::index_page::{IndexPageRef};
 use crate::page::PageType::Index;
 use crate::transaction::tx_memory::TxMemory;
 // Btree base structure and heavy lifting
@@ -50,13 +50,7 @@ impl Cursor<'_> {
                 let guard = current.page_read_guard();
                 let index_page = IndexPageRef::from_guard(guard);
                 // Need to match on the index page type
-                match index_page.get_index_type() {
-                    IndexRole::Internal => {
-                        let child_ptr = index_page.find_child_ptr(key);
-                        // TODO Continue here...
-                    },
-                    _ => {},
-                }
+
             },
             _ => {},
         }

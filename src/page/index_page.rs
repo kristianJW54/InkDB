@@ -7,60 +7,46 @@
 
 use std::fmt::Error;
 use crate::page::page_frame::{PageReadGuard, PageWriteGuard};
-use crate::page::PageID;
+use crate::page::{PageID, PageType};
+use crate::page::raw_page::SlottedPage;
 
-const INDEX_ROOT: u8 = 0b0001;
-const INDEX_INTERNAL: u8 = INDEX_ROOT << 1;
-const INDEX_LEAF: u8 = INDEX_ROOT << 2;
 
-// TODO Bit operator functions
+// TODO Add Index Flags like DELETED, HALF_DEAD, INCOMPLETE_SPLIT
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum IndexRole {
-    Root,
-    Internal,
-    Leaf,
+struct IndexTail {
+    right_sibling: u64,
+    left_sibling: u64,
 }
 
-impl IndexRole {
-    pub(crate) fn from_bits(bits: u8) -> Self {
-        match bits {
-            INDEX_ROOT => IndexRole::Root,
-            INDEX_INTERNAL => IndexRole::Internal,
-            INDEX_LEAF => IndexRole::Leaf,
-            _ => IndexRole::Leaf,
-        }
+pub(crate) struct IndexPageOwned {
+    page: SlottedPage,
+}
+
+// TODO Implement IndexPageOwned
+impl IndexPageOwned {
+    pub(crate) fn new(lsn: u64) -> Self {
+        let mut page = SlottedPage::new_blank();
+        page.set_page_type(PageType::Index);
+        page.set_special_offset(16);
+
+        // We now need to get the special space and modify
+
+        Self { page }
+
     }
-    pub(crate) fn to_bits(&self) -> u8 {
-        match self {
-            IndexRole::Root => INDEX_ROOT,
-            IndexRole::Internal => INDEX_INTERNAL,
-            IndexRole::Leaf => INDEX_LEAF,
-        }
+
+    pub(crate) fn into_inner(self) -> SlottedPage {
+        self.page
     }
 }
+
+
 
 pub(crate) struct IndexPageRef<'page> {
     data: PageReadGuard<'page>,
 }
 
 impl <'page> IndexPageRef<'page> {
-
-    pub(crate) fn is_leaf(&self) -> bool {
-        self.data.get_flags() & INDEX_LEAF != 0
-    }
-
-    pub(crate) fn is_internal(&self) -> bool {
-        self.data.get_flags() & INDEX_INTERNAL != 0
-    }
-
-    pub(crate) fn is_root(&self) -> bool {
-        self.data.get_flags() & INDEX_ROOT != 0
-    }
-
-    pub(crate) fn get_index_type(&self) -> IndexRole {
-        IndexRole::from_bits(self.data.get_flags())
-    }
 
     pub(crate) fn from_guard(guard: PageReadGuard<'page>) -> Self { Self { data: guard } }
 
@@ -84,10 +70,24 @@ impl <'page> IndexPageRef<'page> {
 //TODO Later we decide if we want LeafIndexRef/Mut and InternalIndexRef/Mut etc
 // May not be needed at all...
 
-#[test]
-fn test_bit() {
 
-    println!("{}", INDEX_INTERNAL);
-    println!("{}", INDEX_LEAF);
+//------------------ Index Tuples ---------------------//
 
+// An index tuple is similar to Postgres Index tuple which is both a pivot tuple (internal) and
+// leaf tuple (leaf) with TID pointer to heap data
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creating_index_page() {
+
+        let index_page = IndexPageOwned::new(0);
+        let mut page = index_page.into_inner();
+        let space = page.get_special_mut().unwrap();
+        println!("special space = {:?}", space);
+
+    }
 }
