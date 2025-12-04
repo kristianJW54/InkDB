@@ -125,7 +125,7 @@ impl SlottedPage {
             buff[FLAGS_OFFSET] = flags;
         }
 
-        // Lastly set the special flags at end if provided
+        // Lastly set the special offset at end if provided
         if special > 0 {
             buff[SPECIAL_OFFSET..SPECIAL_OFFSET + SPECIAL_SIZE].copy_from_slice(special.to_le_bytes().as_slice());
         }
@@ -290,6 +290,22 @@ impl SlottedPage {
     }
 
     // Operator Methods
+
+    // Special Section Methods
+
+    fn special_size(&self) -> usize {
+        if self[SPECIAL_OFFSET] == 0 {
+            return 0;
+        }
+        PAGE_SIZE - self.bytes[SPECIAL_OFFSET] as usize
+    }
+
+    pub(super) fn set_special(&self) -> Option<&'_ [u8]> {
+        if self.special_size() == 0 {
+            return None
+        }
+        todo!("finish")
+    }
 
 
 
