@@ -3,9 +3,9 @@ use std::io::{Error, ErrorKind};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 use crate::page::page_frame::PageFrame;
-use crate::page::{PageID, PageType};
+use crate::page::{PageID, PageKind};
 use crate::page::index_page::{IndexPageRef};
-use crate::page::PageType::Index;
+use crate::page::PageKind::Index;
 use crate::transaction::tx_memory::TxMemory;
 // Btree base structure and heavy lifting
 
@@ -46,7 +46,7 @@ impl Cursor<'_> {
         // I think we wrap current in the
 
         match current.page_type() {
-            PageType::Index => {
+            PageKind::Index => {
                 let guard = current.page_read_guard();
                 let index_page = IndexPageRef::from_guard(guard);
                 // Need to match on the index page type

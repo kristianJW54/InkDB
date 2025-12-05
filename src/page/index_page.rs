@@ -7,37 +7,73 @@
 
 use std::fmt::Error;
 use crate::page::page_frame::{PageReadGuard, PageWriteGuard};
-use crate::page::{PageID, PageType};
+use crate::page::{PageID, PageKind, PageType};
 use crate::page::raw_page::SlottedPage;
 
 
 // TODO Add Index Flags like DELETED, HALF_DEAD, INCOMPLETE_SPLIT
 
+// TODO Add Page Sub Type enum
+
+const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
 struct IndexTail {
     right_sibling: u64,
     left_sibling: u64,
 }
 
-pub(crate) struct IndexPageOwned {
-    page: SlottedPage,
+// Levels for the index page
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexLevel(u8);
+
+impl IndexLevel {
+
+    pub(crate) const MAX: u8 = 15;
+
+    pub(crate) fn new(level: u8) -> Self {
+        assert!(level <= Self::MAX, "Max level for bit field is 15");
+        Self(level)
+    }
+
+    pub(crate) fn get(self) -> u8 {
+        self.0
+    }
+
 }
+
+// TODO Integrate Level into rest of IndexPage
+
+
+pub(crate) struct IndexPageOwned(SlottedPage);
 
 // TODO Implement IndexPageOwned
 impl IndexPageOwned {
     pub(crate) fn new(lsn: u64) -> Self {
         let mut page = SlottedPage::new_blank();
-        page.set_page_type(PageType::Index);
-        page.set_special_offset(16);
+        page.set_page_type(PageType::new(PageKind::Index as u8, 0).into());
+        page.set_special_offset(INDEX_SPECIAL_SIZE);
 
         // We now need to get the special space and modify
 
-        Self { page }
-
+        Self(page)
     }
 
     pub(crate) fn into_inner(self) -> SlottedPage {
-        self.page
+        self.0
     }
+
+    pub(crate) fn get_page_type(&self) -> PageType {
+        PageType::from(self.0.get_page_type())
+    }
+
+    pub(crate) fn kind(&self) -> PageKind {
+        PageType::from(self.0.get_page_type()).page_kind()
+    }
+
+
 }
 
 
@@ -65,6 +101,8 @@ impl <'page> IndexPageRef<'page> {
 
     //
 
+    // TODO Implement page type methods
+
 }
 
 //TODO Later we decide if we want LeafIndexRef/Mut and InternalIndexRef/Mut etc
@@ -82,7 +120,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn creating_index_page() {
+    fn index_special_space() {
 
         let index_page = IndexPageOwned::new(0);
         let mut page = index_page.into_inner();
@@ -90,4 +128,13 @@ mod tests {
         println!("special space = {:?}", space);
 
     }
+
+    #[test]
+    fn index_page_type() {
+
+        let index_page = IndexPageOwned::new(0);
+        println!("page type = {:?}", index_page.kind());
+
+    }
+
 }

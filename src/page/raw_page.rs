@@ -6,7 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
-use crate::page::{read_u16_le, read_u16_le_unsafe, write_u16_le_unsafe, PageID, PageType, RawPage, SlotID};
+use crate::page::{read_u16_le, read_u16_le_unsafe, write_u16_le_unsafe, PageID, PageKind, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -114,7 +114,7 @@ impl SlottedPage {
 
         // Page type byte - we set as undefined because the page type wrapper that calls this should define this
         // If slotted page is initialised and is undefined then it is an invalid page and cannot be operated on
-        buff[PAGE_TYPE_OFFSET] = PageType::Undefined as u8;
+        buff[PAGE_TYPE_OFFSET] = PageKind::Undefined as u8;
 
         // free_start -> slot_dir starts immediately after header
         buff[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE]
@@ -130,14 +130,13 @@ impl SlottedPage {
     // Header + Meta methods
 
     #[inline(always)]
-    pub(crate) fn get_page_type(&self) -> PageType {
-        let byte = self.bytes[PAGE_TYPE_OFFSET];
-        PageType::from_byte(byte)
+    pub(crate) fn get_page_type(&self) -> u8 {
+        self.bytes[PAGE_TYPE_OFFSET]
     }
 
     #[inline(always)]
-    pub(super) fn set_page_type(&mut self, page_type: PageType) {
-        self.bytes[PAGE_TYPE_OFFSET] = page_type as u8;
+    pub(super) fn set_page_type(&mut self, page_type: u8) {
+        self.bytes[PAGE_TYPE_OFFSET] = page_type;
     }
 
     #[inline(always)]
@@ -436,7 +435,7 @@ mod tests {
     fn page_type() {
 
         let page = SlottedPage::default();
-        assert_eq!(page.get_page_type(), PageType::Undefined);
+        assert_eq!(page.get_page_type(), 0);
 
     }
 

@@ -2,14 +2,14 @@ use std::fmt::Error;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::AtomicBool;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use crate::page::{PageID, PageType, RawPage, SlotID};
+use crate::page::{PageID, PageKind, RawPage, SlotID};
 use crate::page::raw_page::{SlottedPage};
 // NOTE: Above PageFrame would be something like the b-tree node/tree
 
 
 pub (crate) struct PageFrame {
     id: PageID,
-    page_type: PageType,
+    page_type: PageKind,
     //txid?
     dirty: AtomicBool,
     inner_page: RwLock<SlottedPage>,
@@ -18,7 +18,7 @@ pub (crate) struct PageFrame {
 
 impl PageFrame {
 
-    pub(crate) fn new_frame_from_page(id: PageID, page_type: PageType, page: SlottedPage) -> Self {
+    pub(crate) fn new_frame_from_page(id: PageID, page_type: PageKind, page: SlottedPage) -> Self {
         Self { id, page_type, dirty: AtomicBool::new(false), inner_page: RwLock::new(SlottedPage::default()), }
     }
 
@@ -30,7 +30,7 @@ impl PageFrame {
         PageWriteGuard { latch_write: self.inner_page.write().unwrap() }
     }
 
-    pub(crate) fn page_type(&self) -> PageType {
+    pub(crate) fn page_type(&self) -> PageKind {
         self.page_type
     }
 
