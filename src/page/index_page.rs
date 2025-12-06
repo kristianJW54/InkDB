@@ -11,10 +11,6 @@ use crate::page::{PageID, PageKind, PageType};
 use crate::page::raw_page::SlottedPage;
 
 
-// TODO Add Index Flags like DELETED, HALF_DEAD, INCOMPLETE_SPLIT
-
-// TODO Add Page Sub Type enum
-
 const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
 
 #[repr(C)]
@@ -27,7 +23,7 @@ struct IndexTail {
 // Levels for the index page
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct IndexLevel(u8);
+pub(crate) struct IndexLevel(pub u8);
 
 impl IndexLevel {
 
@@ -38,10 +34,15 @@ impl IndexLevel {
         Self(level)
     }
 
-    pub(crate) fn get(self) -> u8 {
+    pub(crate) fn into(self) -> u8 {
         self.0
     }
+}
 
+impl From<u8> for IndexLevel {
+    fn from(value: u8) -> IndexLevel {
+        IndexLevel::new(value)
+    }
 }
 
 // TODO Integrate Level into rest of IndexPage
@@ -56,7 +57,8 @@ impl IndexPageOwned {
         page.set_page_type(PageType::new(PageKind::Index as u8, 0).into());
         page.set_special_offset(INDEX_SPECIAL_SIZE);
 
-        // We now need to get the special space and modify
+        // Set lsn
+        page.set_lsn(lsn);
 
         Self(page)
     }
@@ -70,7 +72,17 @@ impl IndexPageOwned {
     }
 
     pub(crate) fn kind(&self) -> PageKind {
-        PageType::from(self.0.get_page_type()).page_kind()
+        self.get_page_type().page_kind()
+    }
+
+    pub(crate) fn level(&self) -> IndexLevel {
+        IndexLevel::from(self.get_page_type().page_sub_type())
+    }
+
+    pub(crate) fn set_level(&mut self, level: IndexLevel) {
+        let mut new_pt = self.get_page_type();
+        new_pt.set_subtype_page_bits(level.into());
+        self.0.set_page_type(new_pt.into())
     }
 
 
@@ -102,6 +114,14 @@ impl <'page> IndexPageRef<'page> {
     //
 
     // TODO Implement page type methods
+    pub(crate) fn get_page_type(&self) -> PageType {
+        println!("page_type = {}", self.data.get_page_type());
+        PageType::from(self.data.get_page_type())
+    }
+
+    pub(crate) fn level(&self) -> IndexLevel {
+        IndexLevel::from(self.get_page_type().page_sub_type())
+    }
 
 }
 
@@ -117,6 +137,7 @@ impl <'page> IndexPageRef<'page> {
 
 #[cfg(test)]
 mod tests {
+    use crate::page::page_frame::PageFrame;
     use super::*;
 
     #[test]
@@ -132,8 +153,20 @@ mod tests {
     #[test]
     fn index_page_type() {
 
-        let index_page = IndexPageOwned::new(0);
+        let mut index_page = IndexPageOwned::new(0);
         println!("page type = {:?}", index_page.kind());
+        println!("page level = {:?}", index_page.level());
+
+        index_page.set_level(IndexLevel::new(2));
+        println!("page type = {:?}", index_page.kind());
+        println!("page new level = {:?}", index_page.level());
+
+        let page = index_page.into_inner();
+        let frame = PageFrame::new_frame_from_page(PageID(0), PageKind::Index, page);
+        let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+
+
+        println!("index ref level = {:?}", index_ref.level());
 
     }
 

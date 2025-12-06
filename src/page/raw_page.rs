@@ -3,10 +3,11 @@
 // NOTE: The raw slotted page
 
 use std::fmt::{Display, Formatter};
+use std::io::Read;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
-use crate::page::{read_u16_le, read_u16_le_unsafe, write_u16_le_unsafe, PageID, PageKind, PageType, RawPage, SlotID};
+use crate::page::{read_u16_le, read_u16_le_unsafe, read_u64_le_unsafe, write_u16_le_unsafe, write_u64_le_unsafe, PageID, PageKind, PageType, RawPage, SlotID};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -101,8 +102,8 @@ impl SlottedPage {
         self.bytes[0] = 1
     }
 
-    pub fn get_first_byte(&self) -> usize {
-        self.bytes[0] as usize
+    pub fn print_header(&self) {
+        println!("header = {:?}", &self.bytes[0..HEADER_SIZE]);    
     }
 
     // -----------------------
@@ -204,6 +205,27 @@ impl SlottedPage {
     #[inline(always)]
     pub(crate) fn get_flags(&self) -> u8 {
         self.bytes[FLAGS_OFFSET]
+    }
+
+    #[inline]
+    pub(crate) fn set_flags(&mut self, flags: u8) {
+        self.bytes[FLAGS_OFFSET] = flags;
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_lsn(&self) -> u64 {
+        unsafe {
+            let b_ptr = self.bytes.as_ptr().add(LSN_OFFSET);
+            read_u64_le_unsafe(b_ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_lsn(&mut self, lsn: u64) {
+        unsafe {
+            let b_ptr = self.bytes.as_mut_ptr().add(LSN_OFFSET);
+            write_u64_le_unsafe(b_ptr, lsn);
+        }
     }
 
     // Slot Dir Methods

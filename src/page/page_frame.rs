@@ -19,7 +19,7 @@ pub (crate) struct PageFrame {
 impl PageFrame {
 
     pub(crate) fn new_frame_from_page(id: PageID, page_type: PageKind, page: SlottedPage) -> Self {
-        Self { id, page_type, dirty: AtomicBool::new(false), inner_page: RwLock::new(SlottedPage::default()), }
+        Self { id, page_type, dirty: AtomicBool::new(false), inner_page: RwLock::new(page), }
     }
 
     pub(crate) fn page_read_guard<'page>(&self) -> PageReadGuard<'_> {
