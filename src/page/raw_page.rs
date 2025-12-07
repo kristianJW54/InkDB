@@ -58,19 +58,23 @@ pub const TXID_SIZE: usize = 4;
 const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 const HEADER_SIZE_U16: u16 = HEADER_SIZE as u16;
 
+pub(super) type Result<T> = std::result::Result<T, PageError>;
+
 #[derive(Debug, Clone)]
-pub(super) enum CellError {
+pub(super) enum PageError {
     EmptySlotDir,
     SlotIDOutOfBounds,
     CorruptCell,
+    SpecialOffsetIsZero,
 }
 
-impl Display for CellError {
+impl Display for PageError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            CellError::EmptySlotDir => { write!(f, "Empty slot dir") }
-            CellError::SlotIDOutOfBounds => { write!(f, "SlotID out of bounds") }
-            CellError::CorruptCell => { write!(f, "Corrupt cell") }
+            PageError::EmptySlotDir => { write!(f, "Empty slot dir") }
+            PageError::SlotIDOutOfBounds => { write!(f, "SlotID out of bounds") }
+            PageError::CorruptCell => { write!(f, "Corrupt cell") }
+            PageError::SpecialOffsetIsZero => { write!(f, "Special offset is zero") }
         }
     }
 }
@@ -246,16 +250,17 @@ impl SlottedPage {
     //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
     // to insert a slot_entry
     //NOTE: Do we need to pass in u16 or if this is called after inserting row data can we pass in ptr?
-    fn insert_slot_entry(&mut self, size: u16, offset: u16) -> Result<(), String> {
+    pub(super) fn append_slot_entry(&mut self, size: u16, offset: u16) -> Result<()> {
 
         let fs = self.free_start();
-        // Get pointer to the start of free space
-        let mut ptr = self.bytes.as_mut_ptr().wrapping_add(fs);
 
         //SAFETY: We know we have valid page space of [u8;4096] this will not fail. However, it is up to the caller
         // for page interpretation and correctness that the space we write is valid free space
         //SAFETY: We call this in a mut self method meaning we have exclusive access to the page
         unsafe {
+
+            // Get pointer to the start of free space
+            let mut ptr = self.bytes.as_mut_ptr().wrapping_add(fs);
 
             let size_bytes = size.to_le_bytes();
             let offset_bytes = offset.to_le_bytes();
@@ -270,22 +275,32 @@ impl SlottedPage {
         Ok(())
     }
 
+    // TODO insert_slot_entry_at_index() method
+    pub(super) fn insert_slot_entry_at_index(&mut self, idx: usize, entry: SlotEntry) -> Result<()> {
+
+        // we need to first allocate a slot entry size at the start of free space
+        // then we take the slot entries and shift them along by slot_entry_size[4]
+        // finally we need to add the slot entry to the start of the slot_dir at HEADER_SIZE
+
+        todo!("finish")
+    }
+
     // Cell Methods
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8], CellError> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
         let slot_dir = self.slot_dir_ref();
         if slot_dir.size == 0 {
-            return Err(CellError::EmptySlotDir);
+            return Err(PageError::EmptySlotDir);
         }
 
         let idx = slot_id.0 as usize;
         let index_offset = idx * ENTRY_SIZE;
         if idx > slot_dir.slot_count() {
-            return Err(CellError::SlotIDOutOfBounds)
+            return Err(PageError::SlotIDOutOfBounds)
         }
 
         // TODO Add safety notes and also debug asserts
@@ -300,7 +315,7 @@ impl SlottedPage {
             let end = offset + length;
 
             if end > PAGE_SIZE {
-                return Err(CellError::CorruptCell)
+                return Err(PageError::CorruptCell)
             }
 
             return Ok(self.bytes[offset..end].as_ref());
@@ -308,7 +323,7 @@ impl SlottedPage {
         }
     }
 
-    pub(super) fn cell_slice_from_entry(&self, se: SlotEntry) -> Result<&'_ [u8], String> {
+    pub(super) fn cell_slice_from_entry(&self, se: SlotEntry) -> Result<&'_ [u8]> {
 
         // We have a valid slot entry. The only way we would be able to get his is if there also exists a valid
         // cell area
@@ -337,17 +352,28 @@ impl SlottedPage {
         PAGE_SIZE - offset
     }
 
-    pub(super) fn get_special_mut(&mut self) -> Result<&'_ mut [u8], String> {
+    pub(super) fn get_special_mut(&mut self) -> Result<&'_ mut [u8]> {
         let special_size = self.special_size();
         let s_offset = self.get_special_offset() as usize;
-        println!("special offset = {s_offset}");
         if s_offset == 0 {
-            return Err("Offset is 0".to_string());
+            return Err(PageError::SpecialOffsetIsZero);
         }
         let size = PAGE_SIZE - s_offset;
         assert!(size <= PAGE_SIZE);
 
         Ok(&mut self.bytes[s_offset..s_offset + size])
+    }
+
+    pub(super) fn get_special_ref(&self) -> Result<&'_ [u8]> {
+        let special_size = self.special_size();
+        let s_offset = self.get_special_offset() as usize;
+        if s_offset == 0 {
+            return Err(PageError::SpecialOffsetIsZero);
+        }
+        let size = PAGE_SIZE - s_offset;
+        assert!(size <= PAGE_SIZE);
+
+        Ok(&self.bytes[s_offset..s_offset + size])
     }
 
 
@@ -470,9 +496,9 @@ mod tests {
 
         println!("slot dir size = {}", sd.size);
 
-        page.insert_slot_entry(100, 12).unwrap();
-        page.insert_slot_entry(200, 21).unwrap();
-        page.insert_slot_entry(300, 22).unwrap();
+        page.append_slot_entry(100, 12).unwrap();
+        page.append_slot_entry(200, 21).unwrap();
+        page.append_slot_entry(300, 22).unwrap();
 
         for i in page.slot_dir_ref().iter() {
             println!("{:?}", i);

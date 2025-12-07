@@ -7,8 +7,20 @@ pub mod index_page;
 
 pub(crate) type RawPage = [u8; 4096];
 
-#[derive(Eq, Hash, PartialEq, Debug)]
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub(crate) struct PageID(pub u64);
+
+impl PageID {
+    pub(crate) fn into(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for PageID {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub(crate) struct SlotID(pub u16);

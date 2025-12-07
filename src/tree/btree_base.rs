@@ -66,7 +66,6 @@ impl <'blink> Cursor<'blink> {
         // At the moment I'm not using page specific type? Do we want to here?
 
         let current = self.current.clone(); // We are not cloning the page, we are just creating another Arc<Page> ref
-        // I think we wrap current in the
 
         match current.page_type() {
             PageKind::Index => {
@@ -75,10 +74,13 @@ impl <'blink> Cursor<'blink> {
                 // Need to match on the index page level
                 return match index_page.level().into() {
                     0 => {
-                        println!("we are a leaf - can't descend no more");
                         Err(BaseTreeError::DescentError { level: 0, error: "we are a leaf" })
                     }
-                    _ => Err(BaseTreeError::DescentError { level: index_page.level().into() as usize, error: "supposed to have found a leaf" })
+                    _ => {
+                        // If we are in this branch then we can try to descend
+                        //
+                        Err(BaseTreeError::DescentError { level: index_page.level().into() as usize, error: "supposed to have found a leaf" })
+                    }
                 }
 
             },

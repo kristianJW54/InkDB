@@ -7,17 +7,18 @@
 
 use std::fmt::Error;
 use crate::page::page_frame::{PageReadGuard, PageWriteGuard};
-use crate::page::{PageID, PageKind, PageType};
+use crate::page::{read_u64_le_unsafe, PageID, PageKind, PageType};
 use crate::page::raw_page::SlottedPage;
 
 
 const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
+const RIGHT_SIBLING_OFFSET: usize = 8;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct IndexTail {
-    right_sibling: u64,
-    left_sibling: u64,
+    right_sibling: PageID,
+    left_sibling: PageID,
 }
 
 // Levels for the index page
@@ -85,6 +86,24 @@ impl IndexPageOwned {
         self.0.set_page_type(new_pt.into())
     }
 
+    // Special methods
+
+    pub(crate) fn set_right_sibling(&mut self, page_id: PageID) {
+        // Could use unsafe but since we are an owned struct building a SlottedPage we don't have a lock
+        // and no others are waiting for access.
+        if let Ok(special) = self.0.get_special_mut() {
+            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8].copy_from_slice(page_id.into().to_le_bytes().as_ref());
+        }
+    }
+
+    pub(crate) fn has_right_sibling(&self) -> bool {
+        if let Ok(special) = self.0.get_special_ref() {
+            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8;8]
+        } else {
+            false
+        }
+    }
+
 
 }
 
@@ -113,7 +132,6 @@ impl <'page> IndexPageRef<'page> {
 
     //
 
-    // TODO Implement page type methods
     pub(crate) fn get_page_type(&self) -> PageType {
         println!("page_type = {}", self.data.get_page_type());
         PageType::from(self.data.get_page_type())
@@ -121,6 +139,20 @@ impl <'page> IndexPageRef<'page> {
 
     pub(crate) fn level(&self) -> IndexLevel {
         IndexLevel::from(self.get_page_type().page_sub_type())
+    }
+
+    pub(crate) fn get_right_sibling(&self) -> Option<PageID> {
+        let special = self.data.get_special_ref().ok()?;
+        // TODO Add safety info
+        unsafe {
+            let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);
+            let sib = read_u64_le_unsafe(b_ptr);
+            return if sib == 0 {
+                Some(sib.into())
+            } else {
+                None
+            }
+        }
     }
 
 }
@@ -156,10 +188,13 @@ mod tests {
         let mut index_page = IndexPageOwned::new(0);
         println!("page type = {:?}", index_page.kind());
         println!("page level = {:?}", index_page.level());
+        println!("has right sibling = {:?}", index_page.has_right_sibling());
 
         index_page.set_level(IndexLevel::new(2));
+        index_page.set_right_sibling(PageID(1234));
         println!("page type = {:?}", index_page.kind());
         println!("page new level = {:?}", index_page.level());
+        println!("has right sibling = {:?}", index_page.has_right_sibling());
 
         let page = index_page.into_inner();
         let frame = PageFrame::new_frame_from_page(PageID(0), PageKind::Index, page);
@@ -167,6 +202,7 @@ mod tests {
 
 
         println!("index ref level = {:?}", index_ref.level());
+        println!("page id = {:?}", index_ref.get_right_sibling());
 
     }
 
