@@ -5,7 +5,7 @@
 use std::fmt::{Display, Formatter};
 use std::io::Read;
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Index};
 use std::ptr;
 use crate::page::{read_u16_le, read_u16_le_unsafe, read_u64_le_unsafe, write_u16_le_unsafe, write_u64_le_unsafe, PageID, PageKind, PageType, RawPage, SlotID};
 
@@ -66,6 +66,8 @@ pub(super) enum PageError {
     SlotIDOutOfBounds,
     CorruptCell,
     SpecialOffsetIsZero,
+    SlotIndexNotInRange,
+    NotEnoughFreeSpace,
 }
 
 impl Display for PageError {
@@ -75,6 +77,8 @@ impl Display for PageError {
             PageError::SlotIDOutOfBounds => { write!(f, "SlotID out of bounds") }
             PageError::CorruptCell => { write!(f, "Corrupt cell") }
             PageError::SpecialOffsetIsZero => { write!(f, "Special offset is zero") }
+            PageError::SlotIndexNotInRange => { write!(f, "SlotIndex is not in range") }
+            PageError::NotEnoughFreeSpace => { write!(f, "Not enough free space") }
         }
     }
 }
@@ -153,7 +157,7 @@ impl SlottedPage {
     }
 
     #[inline(always)]
-    fn increment_free_start(&mut self, bytes: usize) {
+    fn increment_free_start(&mut self, bytes: usize) -> usize {
         let cur_fs = self.free_start();
         let new_fs = cur_fs + bytes;
 
@@ -165,6 +169,8 @@ impl SlottedPage {
         // NOTE: Could use pointer math here
         self.bytes[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE]
             .copy_from_slice(&fs_u16.to_le_bytes());
+
+        new_fs
 
     }
 
@@ -253,6 +259,11 @@ impl SlottedPage {
     pub(super) fn append_slot_entry(&mut self, size: u16, offset: u16) -> Result<()> {
 
         let fs = self.free_start();
+        let end = self.free_end();
+
+        if end - fs < ENTRY_SIZE {
+            return Err(PageError::NotEnoughFreeSpace)
+        }
 
         //SAFETY: We know we have valid page space of [u8;4096] this will not fail. However, it is up to the caller
         // for page interpretation and correctness that the space we write is valid free space
@@ -262,27 +273,64 @@ impl SlottedPage {
             // Get pointer to the start of free space
             let mut ptr = self.bytes.as_mut_ptr().wrapping_add(fs);
 
-            let size_bytes = size.to_le_bytes();
             let offset_bytes = offset.to_le_bytes();
+            let length_bytes = size.to_le_bytes();
 
-            ptr::copy_nonoverlapping(size_bytes.as_ptr(), ptr, 2);
-            ptr::copy_nonoverlapping(offset_bytes.as_ptr(), ptr.add(2), 2);
+            ptr::copy_nonoverlapping(offset_bytes.as_ptr(), ptr, 2);
+            ptr::copy_nonoverlapping(length_bytes.as_ptr(), ptr.add(2), 2);
 
         }
-
         self.increment_free_start(ENTRY_SIZE);
-
         Ok(())
     }
 
     // TODO insert_slot_entry_at_index() method
     pub(super) fn insert_slot_entry_at_index(&mut self, idx: usize, entry: SlotEntry) -> Result<()> {
 
-        // we need to first allocate a slot entry size at the start of free space
+        // we need to first allocate a slot entry size at the start of free space and get the number of slots
         // then we take the slot entries and shift them along by slot_entry_size[4]
         // finally we need to add the slot entry to the start of the slot_dir at HEADER_SIZE
 
-        todo!("finish")
+        let old_fs = self.free_start();
+        let end = self.free_end();
+
+        if end - old_fs < ENTRY_SIZE {
+            return Err(PageError::NotEnoughFreeSpace)
+        }
+
+        let slot_count = (old_fs - HEADER_SIZE) / ENTRY_SIZE;
+
+        if idx > slot_count {
+            return Err(PageError::SlotIndexNotInRange)
+        }
+
+        if idx == slot_count {
+            return self.append_slot_entry(entry.length, entry.offset)
+        }
+
+        let index_offset = HEADER_SIZE + (idx * ENTRY_SIZE);
+
+        // TODO add safety
+        unsafe {
+            let b_ptr = self.bytes.as_mut_ptr();
+            // Shift the slot dir after the index offset
+            ptr::copy(b_ptr.add(index_offset),
+                      b_ptr.add(index_offset + ENTRY_SIZE),
+                      (slot_count - idx) * ENTRY_SIZE
+            );
+
+            // Now we need to copy in the slot entry
+
+            let offset = entry.offset.to_le_bytes();
+            let length = entry.length.to_le_bytes();
+
+            ptr::copy_nonoverlapping(offset.as_ptr(), b_ptr.add(index_offset), 2);
+            ptr::copy_nonoverlapping(length.as_ptr(), b_ptr.add(index_offset + 2), 2);
+
+            let new_fs = self.increment_free_start(ENTRY_SIZE);
+
+            Ok(())
+        }
     }
 
     // Cell Methods
@@ -417,8 +465,8 @@ impl<'a> SlotRef<'a> {
 
 #[derive(Debug)]
 pub(super) struct SlotEntry {
-    length: u16,
     offset: u16,
+    length: u16,
 }
 
 pub(super) struct SlotDirIter<'a> {
@@ -453,15 +501,15 @@ impl SlotDirIter<'_> {
             // Start is pointer in the page at the position of the last entry which we advance by ENTRY_SIZE
             let start = self.ptr.add(self.pos * ENTRY_SIZE);
 
-            let length = read_u16_le_unsafe(start);
-            let offset = read_u16_le_unsafe(start.add(2));
+            let offset = read_u16_le_unsafe(start);
+            let length = read_u16_le_unsafe(start.add(2));
 
             self.pos += 1;
             println!("pos = {}", self.pos);
 
             println!("offset {}, length {}", offset, length);
 
-            Some(SlotEntry { length, offset })
+            Some(SlotEntry { offset, length })
         }
     }
 }
@@ -496,9 +544,11 @@ mod tests {
 
         println!("slot dir size = {}", sd.size);
 
+
         page.append_slot_entry(100, 12).unwrap();
         page.append_slot_entry(200, 21).unwrap();
         page.append_slot_entry(300, 22).unwrap();
+
 
         for i in page.slot_dir_ref().iter() {
             println!("{:?}", i);
@@ -526,6 +576,28 @@ mod tests {
         match page.get_special_mut() {
             Ok(_) => panic!("Expected an error for undefined special area"),
             Err(e) => println!("Correctly errored: {}", e),
+        }
+
+    }
+
+    #[test]
+    fn check_insert_entry_at_index() {
+
+        let mut page = SlottedPage::default();
+        page.append_slot_entry(12, 100).unwrap();
+        page.append_slot_entry(15, 150).unwrap();
+        page.append_slot_entry(40, 200).unwrap();
+
+        for i in page.slot_dir_ref().iter() {
+            println!("{:?}", i);
+        }
+
+        println!();
+
+        page.insert_slot_entry_at_index(2, SlotEntry{ length: 30, offset: 50 }).unwrap();
+
+        for i in page.slot_dir_ref().iter() {
+            println!("{:?}", i);
         }
 
     }
