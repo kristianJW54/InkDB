@@ -1,15 +1,19 @@
-
-
-
 //------------------------- Page specific types ------------------------------//
 
 // Page types interpret over the slotted page for their type
-
-use std::fmt::Error;
 use crate::page::page_frame::{PageReadGuard, PageWriteGuard};
-use crate::page::{read_u64_le_unsafe, PageID, PageKind, PageType};
+use crate::page::ptr;
 use crate::page::raw_page::SlottedPage;
+use crate::page::{PageID, PageKind, PageType, read_u64_le_unsafe};
+use std::slice::from_raw_parts;
 
+pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
+
+#[derive(Debug, Clone)]
+pub(crate) enum IndexPageError {
+    InvalidPageType,
+    InvalidLevel,
+}
 
 const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
 const RIGHT_SIBLING_OFFSET: usize = 8;
@@ -27,7 +31,6 @@ struct IndexTail {
 pub(crate) struct IndexLevel(pub u8);
 
 impl IndexLevel {
-
     pub(crate) const MAX: u8 = 15;
 
     pub(crate) fn new(level: u8) -> Self {
@@ -47,7 +50,6 @@ impl From<u8> for IndexLevel {
 }
 
 // TODO Integrate Level into rest of IndexPage
-
 
 pub(crate) struct IndexPageOwned(SlottedPage);
 
@@ -92,39 +94,34 @@ impl IndexPageOwned {
         // Could use unsafe but since we are an owned struct building a SlottedPage we don't have a lock
         // and no others are waiting for access.
         if let Ok(special) = self.0.get_special_mut() {
-            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8].copy_from_slice(page_id.into().to_le_bytes().as_ref());
+            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8]
+                .copy_from_slice(page_id.into().to_le_bytes().as_ref());
         }
     }
 
     pub(crate) fn has_right_sibling(&self) -> bool {
         if let Ok(special) = self.0.get_special_ref() {
-            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8;8]
+            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
         } else {
             false
         }
     }
-
-
 }
-
-
 
 pub(crate) struct IndexPageRef<'page> {
     data: PageReadGuard<'page>,
 }
 
-impl <'page> IndexPageRef<'page> {
+impl<'page> IndexPageRef<'page> {
+    pub(crate) fn from_guard(guard: PageReadGuard<'page>) -> Self {
+        Self { data: guard }
+    }
 
-    pub(crate) fn from_guard(guard: PageReadGuard<'page>) -> Self { Self { data: guard } }
-
-    pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>, Error> {
-
+    pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
         for se in self.data.slot_dir_ref().iter() {
-            if let Ok(cell) = self.data.cell_slice_from_entry(se) {
-                // Get key, compare and return child_ptr
-                
-            }
+            cell = self.data.cell_slice_from_entry(se)
 
+            // Do we want to construct a cell struct? Or do manual byte comparison here?
         }
 
         todo!("finish find_child_ptr")
@@ -147,44 +144,66 @@ impl <'page> IndexPageRef<'page> {
         unsafe {
             let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);
             let sib = read_u64_le_unsafe(b_ptr);
-            return if sib == 0 {
-                Some(sib.into())
-            } else {
-                None
-            }
+            return if sib == 0 { Some(sib.into()) } else { None };
         }
     }
-
 }
 
 //TODO Later we decide if we want LeafIndexRef/Mut and InternalIndexRef/Mut etc
 // May not be needed at all...
 
-
-//------------------ Index Tuples ---------------------//
+//------------------ Index Cells & Tuples ---------------------//
 
 // An index tuple is similar to Postgres Index tuple which is both a pivot tuple (internal) and
 // leaf tuple (leaf) with TID pointer to heap data
 
+// Index Cell Layout:
+// child_ptr OR tid_ptr (8 bytes) | key_len (2 bytes) | key_data |
+
+const CHILD_PTR_OFFSET: usize = 0;
+const KEY_LEN_OFFSET: usize = 8;
+const KEY_DATA_OFFSET: usize = 10;
+
+// TODO Finish completing the index cell layout and method blocks
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct IndexCell<'index_page> {
+    cell: &'index_page [u8],
+    // May want things like child_ptr or key unless we copy out and return on method call (think about why
+    // we would want to store anything)
+}
+
+impl<'index_page> IndexCell<'index_page> {
+    fn from(cell_ref: &'index_page [u8]) -> Self {
+        assert!(cell_ref.len() >= 10);
+        Self { cell: cell_ref }
+    }
+
+    fn get_key(&self) -> &[u8] {
+        unsafe {
+            let cell_ptr = self.cell.as_ptr().add(KEY_DATA_OFFSET);
+            let key_len = read_u64_le_unsafe(cell_ptr) as usize;
+            assert!(KEY_DATA_OFFSET + key_len <= self.cell.len());
+            from_raw_parts(cell_ptr.add(KEY_LEN_OFFSET), key_len)
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use crate::page::page_frame::PageFrame;
     use super::*;
+    use crate::page::page_frame::PageFrame;
 
     #[test]
     fn index_special_space() {
-
         let index_page = IndexPageOwned::new(0);
         let mut page = index_page.into_inner();
         let space = page.get_special_mut().unwrap();
         println!("special space = {:?}", space);
-
     }
 
     #[test]
     fn index_page_type() {
-
         let mut index_page = IndexPageOwned::new(0);
         println!("page type = {:?}", index_page.kind());
         println!("page level = {:?}", index_page.level());
@@ -200,10 +219,7 @@ mod tests {
         let frame = PageFrame::new_frame_from_page(PageID(0), PageKind::Index, page);
         let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
 
-
         println!("index ref level = {:?}", index_ref.level());
         println!("page id = {:?}", index_ref.get_right_sibling());
-
     }
-
 }
