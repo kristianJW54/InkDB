@@ -2,17 +2,23 @@
 
 // Page types interpret over the slotted page for their type
 use crate::page::page_frame::{PageReadGuard, PageWriteGuard};
-use crate::page::ptr;
-use crate::page::raw_page::SlottedPage;
-use crate::page::{PageID, PageKind, PageType, read_u64_le_unsafe};
+use crate::page::raw_page::{PageError, SlottedPage};
+use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
 use std::slice::from_raw_parts;
 
 pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
 
 #[derive(Debug, Clone)]
 pub(crate) enum IndexPageError {
+    PageError(PageError),
     InvalidPageType,
     InvalidLevel,
+}
+
+impl From<PageError> for IndexPageError {
+    fn from(error: PageError) -> Self {
+        IndexPageError::PageError(error)
+    }
 }
 
 const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
@@ -118,16 +124,40 @@ impl<'page> IndexPageRef<'page> {
     }
 
     pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
-        for se in self.data.slot_dir_ref().iter() {
-            cell = self.data.cell_slice_from_entry(se)
+        let mut high_key = false;
+        if self.has_right_sibling() {
+            //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
+            // and give a wrapped error with context
+            let hkc = self.data.cell_slice_from_id(SlotID(0))?;
+            let high_key_cell = IndexCell::from(hkc);
+            high_key = true;
+            if key > high_key_cell.get_key() {
+                return Ok(self.get_right_sibling());
+            }
+        };
 
-            // Do we want to construct a cell struct? Or do manual byte comparison here?
+        // TODO Sort out high_key
+        let skip = if high_key { 1 } else { 0 };
+
+        for se in self.data.slot_dir_ref().iter().skip(skip) {
+            let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
+
+            if key < cell.get_key() {
+                return Ok(Some(cell.get_page_id()));
+            }
         }
-
-        todo!("finish find_child_ptr")
+        Ok(None)
     }
 
     //
+
+    pub(crate) fn has_right_sibling(&self) -> bool {
+        if let Ok(special) = self.data.get_special_ref() {
+            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
+        } else {
+            false
+        }
+    }
 
     pub(crate) fn get_page_type(&self) -> PageType {
         println!("page_type = {}", self.data.get_page_type());
@@ -187,6 +217,15 @@ impl<'index_page> IndexCell<'index_page> {
             from_raw_parts(cell_ptr.add(KEY_LEN_OFFSET), key_len)
         }
     }
+
+    fn get_page_id(&self) -> PageID {
+        // SAFETY: The cell is guaranteed to be at least 10 bytes long, and the child pointer is at offset 0.
+        unsafe {
+            let cell_ptr = self.cell.as_ptr().add(CHILD_PTR_OFFSET);
+            let page_id = read_u64_le_unsafe(cell_ptr);
+            PageID::from(page_id)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +260,14 @@ mod tests {
 
         println!("index ref level = {:?}", index_ref.level());
         println!("page id = {:?}", index_ref.get_right_sibling());
+    }
+
+    #[test]
+    fn find_child_ptr() {
+        let mut index_page = IndexPageOwned::new(0);
+        index_page.set_level(IndexLevel::new(2));
+        index_page.set_right_sibling(PageID(1234));
+
+        // TODO Need an add cell to the raw_page?
     }
 }
