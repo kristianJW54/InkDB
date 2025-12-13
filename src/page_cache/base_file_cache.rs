@@ -1,5 +1,3 @@
-
-
 //NOTE: This is the main intersection between disk and in-memory for pages
 
 //NOTE: There are optimisations to be had where we look at all of the pages that we would need for the transaction
@@ -8,10 +6,10 @@
 
 //NOTE: We can also further optimise by
 
+use crate::page::PageID;
+use crate::page_cache::page_frame::PageFrame;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::page::{PageID};
-use crate::page::page_frame::PageFrame;
 
 pub struct BaseFileCache {
     pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
@@ -23,6 +21,8 @@ pub struct BaseFileCache {
 
 impl BaseFileCache {
     pub fn new() -> Self {
-        Self { cache: Mutex::new(HashMap::new()) }
+        Self {
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 }

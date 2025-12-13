@@ -1,14 +1,12 @@
 use std::ptr;
 
-pub mod raw_page;
-pub mod page_frame;
-pub mod meta;
-pub mod index_page;
+mod raw_page;
+pub(crate) use raw_page::{PageError, SlottedPage};
 
 pub(crate) type RawPage = [u8; 4096];
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
-pub(crate) struct PageID(pub u64);
+pub struct PageID(pub u64);
 
 impl PageID {
     pub(crate) fn into(self) -> u64 {
@@ -59,7 +57,6 @@ pub(crate) unsafe fn write_u64_le_unsafe(b_ptr: *mut u8, value: u64) {
     ptr::copy_nonoverlapping(bytes.as_ptr(), b_ptr, 8);
 }
 
-
 // ------------- Page Bit Type Masks --------------- //
 
 /*
@@ -69,14 +66,13 @@ pub(crate) unsafe fn write_u64_le_unsafe(b_ptr: *mut u8, value: u64) {
 */
 
 pub(super) const PAGE_TYPE_MASK: u8 = 0b0000_1111;
-pub(super) const SUBTYPE_MASK:   u8 = 0b1111_0000;
+pub(super) const SUBTYPE_MASK: u8 = 0b1111_0000;
 
 const PT_UNDEFINED: u8 = 0b000_0000;
 const PT_HEAP: u8 = 0b0000_0001;
 const PT_INDEX: u8 = 0b0000_0010;
 const PT_META: u8 = 0b0000_0011;
 const PT_FREE: u8 = 0b0000_0100;
-
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PageKind {
@@ -89,7 +85,6 @@ pub(super) enum PageKind {
 }
 
 impl PageKind {
-
     pub(super) fn from_u8(pt: u8) -> Option<Self> {
         Some(match pt {
             PT_UNDEFINED => PageKind::Undefined,
@@ -109,7 +104,6 @@ impl PageKind {
 pub(crate) struct PageType(u8);
 
 impl PageType {
-
     pub(crate) fn new(pt: u8, pst: u8) -> Self {
         let page_type = pt & PAGE_TYPE_MASK;
         let sub_type = (pst & PAGE_TYPE_MASK) << 4;
@@ -125,9 +119,7 @@ impl PageType {
     }
 
     pub(crate) fn page_kind(&self) -> PageKind {
-        PageKind::from_u8(self.page_type()).unwrap_or_else(|| {
-            PageKind::Undefined
-        })
+        PageKind::from_u8(self.page_type()).unwrap_or_else(|| PageKind::Undefined)
     }
 
     pub(crate) fn page_sub_type(&self) -> u8 {
@@ -147,7 +139,6 @@ impl PageType {
         // Finally we merge
         self.0 = (self.0 & !SUBTYPE_MASK) | ((pst & PAGE_TYPE_MASK) << 4)
     }
-
 }
 
 impl From<PageType> for u8 {
@@ -174,7 +165,6 @@ const HALF_DELETED: u8 = 0b000_0100;
 const INCOMPLETE_SPLIT: u8 = 0b000_1000;
 const HAS_OVERFLOW: u8 = 0b001_0000;
 
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PageStates {
     NoState,
@@ -186,7 +176,6 @@ pub(crate) enum PageStates {
 }
 
 impl PageStates {
-
     pub(crate) fn from_u8(pf: u8) -> Option<Self> {
         Some(match pf {
             FAST_PARENT => Self::FastParent,
@@ -208,14 +197,12 @@ impl PageStates {
             _ => return NO_STATE,
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PageFlags(u8);
 
 impl PageFlags {
-
     pub(crate) fn new(pf: PageStates) -> Self {
         Self(pf.bit())
     }
@@ -233,26 +220,32 @@ impl PageFlags {
     }
 
     pub(crate) fn extract_all_flags(&self) -> Vec<PageStates> {
-
         let mut flags = Vec::new();
 
-        if self.has_flag(PageStates::FastParent) { flags.push(PageStates::FastParent) }
-        if self.has_flag(PageStates::Deleted) { flags.push(PageStates::Deleted) }
-        if self.has_flag(PageStates::HalfDeleted) {flags.push(PageStates::Deleted)}
-        if self.has_flag(PageStates::IncompleteSplit) {flags.push(PageStates::IncompleteSplit)}
-        if self.has_flag(PageStates::HasOverflow) {flags.push(PageStates::HasOverflow)}
+        if self.has_flag(PageStates::FastParent) {
+            flags.push(PageStates::FastParent)
+        }
+        if self.has_flag(PageStates::Deleted) {
+            flags.push(PageStates::Deleted)
+        }
+        if self.has_flag(PageStates::HalfDeleted) {
+            flags.push(PageStates::Deleted)
+        }
+        if self.has_flag(PageStates::IncompleteSplit) {
+            flags.push(PageStates::IncompleteSplit)
+        }
+        if self.has_flag(PageStates::HasOverflow) {
+            flags.push(PageStates::HasOverflow)
+        }
 
         flags
     }
-
 }
-
 
 // TODO - Have mod tests for all files within
 
 #[test]
 fn test_bits() {
-
     let state_1 = PageStates::FastParent;
     let state_2 = PageStates::HasOverflow;
 
@@ -260,5 +253,4 @@ fn test_bits() {
     page_flags.set_flag(state_2);
 
     println!("page_flags = {:?}", page_flags.extract_all_flags());
-
 }

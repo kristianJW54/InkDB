@@ -1,9 +1,9 @@
 //------------------------- Page specific types ------------------------------//
 
 // Page types interpret over the slotted page for their type
-use crate::page::page_frame::{PageReadGuard, PageWriteGuard};
-use crate::page::raw_page::{PageError, SlottedPage};
+use crate::page::{PageError, SlottedPage, read_u16_le_unsafe};
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
+use crate::page_cache::page_frame::{PageReadGuard, PageWriteGuard};
 use std::slice::from_raw_parts;
 
 pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
@@ -57,7 +57,7 @@ impl From<u8> for IndexLevel {
 
 // TODO Integrate Level into rest of IndexPage
 
-pub(crate) struct IndexPageOwned(SlottedPage);
+pub struct IndexPageOwned(SlottedPage);
 
 // TODO Implement IndexPageOwned
 impl IndexPageOwned {
@@ -112,6 +112,13 @@ impl IndexPageOwned {
             false
         }
     }
+    //
+    //
+    // TODO Finish
+    pub(crate) fn add_cell_append_slot_entry(&mut self, cell: &[u8]) -> Result<()> {
+        // Also replace cell with the IndexCell newtype
+        todo!("Implement add_cell_append_slot_entry")
+    }
 }
 
 pub(crate) struct IndexPageRef<'page> {
@@ -143,7 +150,7 @@ impl<'page> IndexPageRef<'page> {
             let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
 
             if key < cell.get_key() {
-                return Ok(Some(cell.get_page_id()));
+                return Ok(Some(cell.get_child_ptr()));
             }
         }
         Ok(None)
@@ -174,7 +181,7 @@ impl<'page> IndexPageRef<'page> {
         unsafe {
             let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);
             let sib = read_u64_le_unsafe(b_ptr);
-            return if sib == 0 { Some(sib.into()) } else { None };
+            return if sib == 0 { None } else { Some(sib.into()) };
         }
     }
 }
@@ -211,14 +218,18 @@ impl<'index_page> IndexCell<'index_page> {
 
     fn get_key(&self) -> &[u8] {
         unsafe {
-            let cell_ptr = self.cell.as_ptr().add(KEY_DATA_OFFSET);
-            let key_len = read_u64_le_unsafe(cell_ptr) as usize;
-            assert!(KEY_DATA_OFFSET + key_len <= self.cell.len());
-            from_raw_parts(cell_ptr.add(KEY_LEN_OFFSET), key_len)
+            let cell_ptr = self.cell.as_ptr();
+            let key_len = read_u16_le_unsafe(cell_ptr.add(KEY_LEN_OFFSET)) as usize;
+
+            let key_ptr = cell_ptr.add(KEY_DATA_OFFSET);
+
+            debug_assert!(KEY_DATA_OFFSET + key_len <= self.cell.len());
+
+            from_raw_parts(key_ptr, key_len)
         }
     }
 
-    fn get_page_id(&self) -> PageID {
+    fn get_child_ptr(&self) -> PageID {
         // SAFETY: The cell is guaranteed to be at least 10 bytes long, and the child pointer is at offset 0.
         unsafe {
             let cell_ptr = self.cell.as_ptr().add(CHILD_PTR_OFFSET);
@@ -231,7 +242,7 @@ impl<'index_page> IndexCell<'index_page> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::page_frame::PageFrame;
+    use crate::page_cache::page_frame::PageFrame;
 
     #[test]
     fn index_special_space() {

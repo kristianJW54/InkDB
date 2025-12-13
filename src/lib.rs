@@ -1,4 +1,5 @@
+mod index;
 mod page;
 mod page_cache;
-mod tree;
 mod transaction;
+mod tree;

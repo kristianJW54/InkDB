@@ -1,12 +1,10 @@
-use std::collections::{HashMap, VecDeque};
-use std::io::{Error, ErrorKind};
-use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
-use crate::page::page_frame::PageFrame;
+use crate::index::index_page::IndexPageRef;
 use crate::page::{PageID, PageKind};
-use crate::page::index_page::{IndexPageRef};
-use crate::page::PageKind::Index;
+use crate::page_cache::page_frame::PageFrame;
 use crate::transaction::tx_memory::TxMemory;
+use std::collections::{HashMap, VecDeque};
+use std::ops::Deref;
+use std::sync::Arc;
 
 // Base tree error
 type Result<T> = std::result::Result<T, BaseTreeError>;
@@ -14,11 +12,8 @@ type Result<T> = std::result::Result<T, BaseTreeError>;
 #[derive(Debug)]
 enum BaseTreeError {
     // We could wrap a lower level error type by saying Page(SlottedPageErr)
-    DescentError{
-        level: usize,
-        error: &'static str,
-    },
-    PageNotFound
+    DescentError { level: usize, error: &'static str },
+    PageNotFound,
 }
 
 // Btree base structure and heavy lifting
@@ -32,8 +27,7 @@ pub(crate) struct Cursor<'blink> {
     // Any slot specific fields?
 }
 
-impl <'blink> Cursor<'blink> {
-
+impl<'blink> Cursor<'blink> {
     pub(super) fn new(txm: &'blink TxMemory, starting_frame: Arc<PageFrame>) -> Self {
         let vec = VecDeque::new();
         Self {
@@ -62,7 +56,6 @@ impl <'blink> Cursor<'blink> {
     // TODO Build descend methods - think about different things we would need to do in there like siblings, splits, etc and also think about page semantics
 
     fn descend_level(&self, key: &[u8]) -> Result<Option<Arc<PageFrame>>> {
-
         // At the moment I'm not using page specific type? Do we want to here?
 
         let current = self.current.clone(); // We are not cloning the page, we are just creating another Arc<Page> ref
@@ -73,34 +66,38 @@ impl <'blink> Cursor<'blink> {
                 let index_page = IndexPageRef::from_guard(guard);
                 // Need to match on the index page level
                 return match index_page.level().into() {
-                    0 => {
-                        Err(BaseTreeError::DescentError { level: 0, error: "we are a leaf" })
-                    }
+                    0 => Err(BaseTreeError::DescentError {
+                        level: 0,
+                        error: "we are a leaf",
+                    }),
                     _ => {
                         // If we are in this branch then we can try to descend
                         //
-                        Err(BaseTreeError::DescentError { level: index_page.level().into() as usize, error: "supposed to have found a leaf" })
+                        Err(BaseTreeError::DescentError {
+                            level: index_page.level().into() as usize,
+                            error: "supposed to have found a leaf",
+                        })
                     }
-                }
-
-            },
-            _ => Err(BaseTreeError::DescentError { level: 0, error: "found nothing?" })}
+                };
+            }
+            _ => Err(BaseTreeError::DescentError {
+                level: 0,
+                error: "found nothing?",
+            }),
         }
     }
+}
 
-    // NOTE: What type of storing do we want? Data in cells? Index table with pointer (Indirection)
-
-
+// NOTE: What type of storing do we want? Data in cells? Index table with pointer (Indirection)
 
 #[cfg(test)]
 mod tests {
-    use crate::page::index_page::{IndexLevel, IndexPageOwned};
-    use crate::page_cache::base_file_cache::BaseFileCache;
     use super::*;
+    use crate::index::index_page::{IndexLevel, IndexPageOwned};
+    use crate::page_cache::base_file_cache::BaseFileCache;
 
     #[test]
     fn test_basic_descend_level() {
-
         let mut level_zero_page = IndexPageOwned::new(0);
         level_zero_page.set_level(IndexLevel(0));
         //
@@ -113,15 +110,20 @@ mod tests {
 
         let cursor = Cursor::new(
             &txm,
-            Arc::new(PageFrame::new_frame_from_page(PageID(0), level_zero_page.kind(), level_zero_page.into_inner())));
+            Arc::new(PageFrame::new_frame_from_page(
+                PageID(0),
+                level_zero_page.kind(),
+                level_zero_page.into_inner(),
+            )),
+        );
 
         let result = cursor.descend_level(&[0u8; 4]);
         match result {
-            Ok(Some(page)) => {},
-            Ok(None) => {},
+            Ok(Some(page)) => {}
+            Ok(None) => {}
             Err(e) => {
                 println!("{:?}", e);
-            },
+            }
         }
     }
 }
