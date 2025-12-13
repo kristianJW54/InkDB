@@ -4,6 +4,7 @@
 use crate::page::{PageError, SlottedPage, read_u16_le_unsafe};
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
 use crate::page_cache::page_frame::{PageReadGuard, PageWriteGuard};
+use std::ptr;
 use std::slice::from_raw_parts;
 
 pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
@@ -56,6 +57,18 @@ impl From<u8> for IndexLevel {
 }
 
 // TODO Integrate Level into rest of IndexPage
+
+pub(crate) struct IndexCellOwned(Box<[u8]>);
+
+impl IndexCellOwned {
+    pub(crate) fn new(key: &[u8], child_ptr: PageID) -> Self {
+        let mut cell = Vec::with_capacity(10 + key.len());
+        cell[0..CHILD_PTR_OFFSET].copy_from_slice(&child_ptr.into().to_le_bytes());
+        cell[CHILD_PTR_OFFSET..KEY_LEN_OFFSET].copy_from_slice(&(key.len() as u16).to_le_bytes());
+        cell[KEY_LEN_OFFSET..].copy_from_slice(key);
+        IndexCellOwned(cell.into_boxed_slice())
+    }
+}
 
 pub struct IndexPageOwned(SlottedPage);
 
@@ -112,11 +125,10 @@ impl IndexPageOwned {
             false
         }
     }
-    //
-    //
     // TODO Finish
-    pub(crate) fn add_cell_append_slot_entry(&mut self, cell: &[u8]) -> Result<()> {
-        // Also replace cell with the IndexCell newtype
+    pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
+        // We take an owned IndexCell which we then consume and store as bytes
+        //
         todo!("Implement add_cell_append_slot_entry")
     }
 }
