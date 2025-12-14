@@ -1,10 +1,9 @@
 //------------------------- Page specific types ------------------------------//
 
 // Page types interpret over the slotted page for their type
-use crate::page::{PageError, SlottedPage, read_u16_le_unsafe};
+use crate::page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe};
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
 use crate::page_cache::page_frame::{PageReadGuard, PageWriteGuard};
-use std::ptr;
 use std::slice::from_raw_parts;
 
 pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
@@ -61,11 +60,16 @@ impl From<u8> for IndexLevel {
 pub(crate) struct IndexCellOwned(Box<[u8]>);
 
 impl IndexCellOwned {
+    pub(crate) const MAX_INDEX_CELL_SIZE: usize = PAGE_SIZE - HEADER_SIZE - ENTRY_SIZE;
+
     pub(crate) fn new(key: &[u8], child_ptr: PageID) -> Self {
-        let mut cell = Vec::with_capacity(10 + key.len());
-        cell[0..CHILD_PTR_OFFSET].copy_from_slice(&child_ptr.into().to_le_bytes());
-        cell[CHILD_PTR_OFFSET..KEY_LEN_OFFSET].copy_from_slice(&(key.len() as u16).to_le_bytes());
-        cell[KEY_LEN_OFFSET..].copy_from_slice(key);
+        let est_size = 10 + key.len();
+        assert!(est_size < Self::MAX_INDEX_CELL_SIZE);
+
+        let mut cell = Vec::with_capacity(est_size);
+        cell.extend_from_slice(&child_ptr.into().to_le_bytes());
+        cell.extend_from_slice(&(key.len() as u16).to_le_bytes());
+        cell.extend_from_slice(key);
         IndexCellOwned(cell.into_boxed_slice())
     }
 }
@@ -78,6 +82,14 @@ impl IndexPageOwned {
         let mut page = SlottedPage::new_blank();
         page.set_page_type(PageType::new(PageKind::Index as u8, 0).into());
         page.set_special_offset(INDEX_SPECIAL_SIZE);
+
+        // Adjust free_end for special offset
+        if page
+            .set_free_end(PAGE_SIZE as u16 - INDEX_SPECIAL_SIZE)
+            .is_err()
+        {
+            panic!("Failed to set free end");
+        }
 
         // Set lsn
         page.set_lsn(lsn);
@@ -128,8 +140,9 @@ impl IndexPageOwned {
     // TODO Finish
     pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes
-        //
-        todo!("Implement add_cell_append_slot_entry")
+        let bytes = cell.0.as_ref();
+        self.0.add_cell_append_slot_entry(bytes)?;
+        Ok(())
     }
 }
 
@@ -145,6 +158,7 @@ impl<'page> IndexPageRef<'page> {
     pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
         let mut high_key = false;
         if self.has_right_sibling() {
+            println!("YAYYYY");
             //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
             // and give a wrapped error with context
             let hkc = self.data.cell_slice_from_id(SlotID(0))?;
@@ -160,8 +174,8 @@ impl<'page> IndexPageRef<'page> {
 
         for se in self.data.slot_dir_ref().iter().skip(skip) {
             let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
-
-            if key < cell.get_key() {
+            let cell_key = cell.get_key();
+            if key < cell_key {
                 return Ok(Some(cell.get_child_ptr()));
             }
         }
@@ -261,7 +275,6 @@ mod tests {
         let index_page = IndexPageOwned::new(0);
         let mut page = index_page.into_inner();
         let space = page.get_special_mut().unwrap();
-        println!("special space = {:?}", space);
     }
 
     #[test]
@@ -289,8 +302,25 @@ mod tests {
     fn find_child_ptr() {
         let mut index_page = IndexPageOwned::new(0);
         index_page.set_level(IndexLevel::new(2));
-        index_page.set_right_sibling(PageID(1234));
 
-        // TODO Need an add cell to the raw_page?
+        if let Ok(_) = index_page.add_cell_append_slot_entry(IndexCellOwned::new(
+            "Tesla".as_bytes(),
+            PageID::from(2345 as u64),
+        )) {
+            let frame = PageFrame::new_frame_from_page(
+                PageID::from(2345 as u64),
+                PageKind::Index,
+                index_page.into_inner(),
+            );
+
+            let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+
+            let result_id = index_ref
+                .find_child_ptr("BMW".as_bytes())
+                .ok()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result_id, PageID(2345 as u64));
+        }
     }
 }

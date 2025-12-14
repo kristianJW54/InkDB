@@ -27,31 +27,31 @@ SLOTTED PAGE is dumb - it only knows how to make structural changes to the unive
 // -- Size and Version: 2 bytes
 // -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
 
-const PAGE_SIZE: usize = 4096;
-const PAGE_SIZE_U16: u16 = PAGE_SIZE as u16;
-const ENTRY_SIZE: usize = size_of::<SlotEntry>();
-const ENTRY_SIZE_U16: u16 = ENTRY_SIZE as u16;
+pub(crate) const PAGE_SIZE: usize = 4096;
+pub(crate) const PAGE_SIZE_U16: u16 = PAGE_SIZE as u16;
+pub(crate) const ENTRY_SIZE: usize = size_of::<SlotEntry>();
+pub(crate) const ENTRY_SIZE_U16: u16 = ENTRY_SIZE as u16;
 
-pub const LSN_OFFSET: usize = 0;
-pub const LSN_SIZE: usize = 8;
-pub const CHECKSUM_OFFSET: usize = LSN_OFFSET + LSN_SIZE;
-pub const CHECKSUM_SIZE: usize = 2;
-pub const PAGE_TYPE_OFFSET: usize = CHECKSUM_OFFSET + CHECKSUM_SIZE;
-pub const PAGE_TYPE_SIZE: usize = 1;
-pub const FLAGS_OFFSET: usize = PAGE_TYPE_OFFSET + PAGE_TYPE_SIZE;
-pub const FLAGS_SIZE: usize = 1;
-pub const FREE_START_OFFSET: usize = FLAGS_OFFSET + FLAGS_SIZE;
-pub const FREE_START_SIZE: usize = 2;
-pub const FREE_END_OFFSET: usize = FREE_START_OFFSET + FREE_START_SIZE;
-pub const FREE_END_SIZE: usize = 2;
-pub const SPECIAL_OFFSET: usize = FREE_END_OFFSET + FREE_END_SIZE;
-pub const SPECIAL_SIZE: usize = 2;
-pub const SIZE_VERSION_OFFSET: usize = SPECIAL_OFFSET + SPECIAL_SIZE;
-pub const SIZE_VERSION_SIZE: usize = 2;
-pub const TXID_OFFSET: usize = SIZE_VERSION_OFFSET + SIZE_VERSION_SIZE;
-pub const TXID_SIZE: usize = 4;
+const LSN_OFFSET: usize = 0;
+const LSN_SIZE: usize = 8;
+const CHECKSUM_OFFSET: usize = LSN_OFFSET + LSN_SIZE;
+const CHECKSUM_SIZE: usize = 2;
+const PAGE_TYPE_OFFSET: usize = CHECKSUM_OFFSET + CHECKSUM_SIZE;
+const PAGE_TYPE_SIZE: usize = 1;
+const FLAGS_OFFSET: usize = PAGE_TYPE_OFFSET + PAGE_TYPE_SIZE;
+const FLAGS_SIZE: usize = 1;
+const FREE_START_OFFSET: usize = FLAGS_OFFSET + FLAGS_SIZE;
+const FREE_START_SIZE: usize = 2;
+const FREE_END_OFFSET: usize = FREE_START_OFFSET + FREE_START_SIZE;
+const FREE_END_SIZE: usize = 2;
+const SPECIAL_OFFSET: usize = FREE_END_OFFSET + FREE_END_SIZE;
+const SPECIAL_SIZE: usize = 2;
+const SIZE_VERSION_OFFSET: usize = SPECIAL_OFFSET + SPECIAL_SIZE;
+const SIZE_VERSION_SIZE: usize = 2;
+const TXID_OFFSET: usize = SIZE_VERSION_OFFSET + SIZE_VERSION_SIZE;
+const TXID_SIZE: usize = 4;
 
-const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
+pub(crate) const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 const HEADER_SIZE_U16: u16 = HEADER_SIZE as u16;
 
 pub(crate) type Result<T> = std::result::Result<T, PageError>;
@@ -205,7 +205,7 @@ impl SlottedPage {
         }
     }
 
-    fn set_free_end(&mut self, offset: u16) -> Result<()> {
+    pub(crate) fn set_free_end(&mut self, offset: u16) -> Result<()> {
         debug_assert!(offset >= self.free_start() as u16);
         debug_assert!(offset >= HEADER_SIZE_U16);
 
