@@ -493,6 +493,31 @@ impl SlottedPage {
         let free_start = self.free_start();
         let free_end = self.free_end();
 
+        if (cell.len() + ENTRY_SIZE) > free_end - free_start {
+            return Err(PageError::NoContigiousSpace);
+        }
+
+        let cell_start_offset = free_end - cell.len();
+
+        assert!(cell.len() <= u16::MAX as usize);
+        assert!(cell_start_offset <= u16::MAX as usize);
+
+        self.insert_slot_entry_at_index(
+            index,
+            SlotEntry::new(cell_start_offset as u16, cell.len() as u16),
+        )?;
+
+        // We now copy cell data into the free space
+        // SAFETY: We are copying from a valid slice to a valid memory location and not overlapping, we have checked
+        // the bounds of the free space and the cell data size is valid.
+        unsafe {
+            let cell_ptr = self.bytes.as_mut_ptr().add(cell_start_offset);
+            ptr::copy_nonoverlapping(cell.as_ptr(), cell_ptr, cell.len());
+        }
+
+        // IMPORTANT! Need to ensure we update free_end to reflect the change in page memory and free_space
+        self.set_free_end(cell_start_offset as u16)?;
+
         Ok(())
     }
 }
@@ -528,12 +553,6 @@ impl<'a> SlotRef<'a> {
     pub fn iter(&self) -> SlotDirIter<'_> {
         SlotDirIter::new(self.ptr, self.size)
     }
-}
-
-#[derive(Debug)]
-pub struct SlotEntry {
-    offset: u16,
-    length: u16,
 }
 
 pub struct SlotDirIter<'a> {
@@ -592,6 +611,18 @@ impl<'a> Iterator for SlotDirIter<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct SlotEntry {
+    offset: u16,
+    length: u16,
+}
+
+impl SlotEntry {
+    fn new(offset: u16, length: u16) -> Self {
+        SlotEntry { offset, length }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,6 +677,17 @@ mod tests {
     #[test]
     fn check_insert_entry_at_index() {
         let mut page = SlottedPage::default();
+        page.insert_slot_entry_at_index(
+            0,
+            SlotEntry {
+                offset: 20,
+                length: 10,
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic!("Failed to insert slot entry at index: {:?}", err);
+        });
+
         page.append_slot_entry(12, 100).unwrap();
         page.append_slot_entry(15, 150).unwrap();
         page.append_slot_entry(40, 200).unwrap();

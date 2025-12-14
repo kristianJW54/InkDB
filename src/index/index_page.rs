@@ -4,6 +4,7 @@
 use crate::page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe};
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
 use crate::page_cache::page_frame::{PageReadGuard, PageWriteGuard};
+use std::ops::Deref;
 use std::slice::from_raw_parts;
 
 pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
@@ -71,6 +72,14 @@ impl IndexCellOwned {
         cell.extend_from_slice(&(key.len() as u16).to_le_bytes());
         cell.extend_from_slice(key);
         IndexCellOwned(cell.into_boxed_slice())
+    }
+}
+
+impl Deref for IndexCellOwned {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -144,6 +153,17 @@ impl IndexPageOwned {
         self.0.add_cell_append_slot_entry(bytes)?;
         Ok(())
     }
+
+    pub(crate) fn add_cell_at_slot_entry_index(
+        &mut self,
+        index: usize,
+        cell: IndexCellOwned,
+    ) -> Result<()> {
+        // We take an owned IndexCell which we then consume and store as bytes in the RawPage
+        let bytes = cell.deref();
+        self.0.add_cell_at_slot_entry_index(index, bytes)?;
+        Ok(())
+    }
 }
 
 pub(crate) struct IndexPageRef<'page> {
@@ -158,7 +178,6 @@ impl<'page> IndexPageRef<'page> {
     pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
         let mut high_key = false;
         if self.has_right_sibling() {
-            println!("YAYYYY");
             //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
             // and give a wrapped error with context
             let hkc = self.data.cell_slice_from_id(SlotID(0))?;
@@ -173,7 +192,9 @@ impl<'page> IndexPageRef<'page> {
         let skip = if high_key { 1 } else { 0 };
 
         for se in self.data.slot_dir_ref().iter().skip(skip) {
+            println!("se {:?}", se);
             let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
+            println!("cell {:?}", cell);
             let cell_key = cell.get_key();
             if key < cell_key {
                 return Ok(Some(cell.get_child_ptr()));
@@ -302,25 +323,34 @@ mod tests {
     fn find_child_ptr() {
         let mut index_page = IndexPageOwned::new(0);
         index_page.set_level(IndexLevel::new(2));
+        println!("BMW as bytes = {:?}", "BMW".as_bytes());
+        // Now we want to test if adding a cell at a particular index works correctly
+        let cell = IndexCellOwned::new("BMW".as_bytes(), PageID::from(3456 as u64));
+        index_page
+            .add_cell_at_slot_entry_index(0, cell)
+            .unwrap_or_else(|err| {
+                panic!("Failed to add cell at slot entry index: {:?}", err);
+            });
 
-        if let Ok(_) = index_page.add_cell_append_slot_entry(IndexCellOwned::new(
-            "Tesla".as_bytes(),
-            PageID::from(2345 as u64),
-        )) {
-            let frame = PageFrame::new_frame_from_page(
+        index_page
+            .add_cell_append_slot_entry(IndexCellOwned::new(
+                "Tesla".as_bytes(),
                 PageID::from(2345 as u64),
-                PageKind::Index,
-                index_page.into_inner(),
-            );
+            ))
+            .unwrap_or_else(|err| {
+                panic!("Failed to add cell at append slot entry index: {:?}", err);
+            });
 
-            let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+        let frame =
+            PageFrame::new_frame_from_page(PageID(0), PageKind::Index, index_page.into_inner());
 
-            let result_id = index_ref
-                .find_child_ptr("BMW".as_bytes())
-                .ok()
-                .unwrap()
-                .unwrap();
-            assert_eq!(result_id, PageID(2345 as u64));
-        }
+        let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+
+        let result_id = index_ref
+            .find_child_ptr("Ford".as_bytes())
+            .ok()
+            .unwrap()
+            .unwrap();
+        assert_eq!(result_id, PageID(2345 as u64));
     }
 }
