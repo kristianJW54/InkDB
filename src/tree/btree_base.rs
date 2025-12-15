@@ -109,7 +109,9 @@ mod tests {
         level_one_page.set_level(IndexLevel(1));
 
         // We add some cells so we can descend on logic
-
+        // We add cell "Ford" with child_ptr of PageID(1234 as u64) any key which is less than "Ford" alphabetically will be given the child_ptr
+        // We then add cell "Jaguar" with child_ptr of PageID(3456 as u64) any key which is less then "Jaguar" and greater than "Ford"
+        // alphabetically will be given the child_ptr
         level_one_page
             .add_cell_append_slot_entry(IndexCellOwned::new("Ford".as_bytes(), PageID(1234 as u64)))
             .unwrap();
@@ -151,7 +153,7 @@ mod tests {
             Ok(Some(page)) => {
                 // I should have the PageID(0) here and should be able to fetch this from the cahce
 
-                assert_eq!(page, PageID(1234 as u64));
+                assert_eq!(page, PageID(3456 as u64));
             }
             Ok(None) => {}
             Err(e) => {
