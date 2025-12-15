@@ -27,31 +27,31 @@ SLOTTED PAGE is dumb - it only knows how to make structural changes to the unive
 // -- Size and Version: 2 bytes
 // -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
 
-const PAGE_SIZE: usize = 4096;
-const PAGE_SIZE_U16: u16 = PAGE_SIZE as u16;
-const ENTRY_SIZE: usize = size_of::<SlotEntry>();
-const ENTRY_SIZE_U16: u16 = ENTRY_SIZE as u16;
+pub(crate) const PAGE_SIZE: usize = 4096;
+pub(crate) const PAGE_SIZE_U16: u16 = PAGE_SIZE as u16;
+pub(crate) const ENTRY_SIZE: usize = size_of::<SlotEntry>();
+pub(crate) const ENTRY_SIZE_U16: u16 = ENTRY_SIZE as u16;
 
-pub const LSN_OFFSET: usize = 0;
-pub const LSN_SIZE: usize = 8;
-pub const CHECKSUM_OFFSET: usize = LSN_OFFSET + LSN_SIZE;
-pub const CHECKSUM_SIZE: usize = 2;
-pub const PAGE_TYPE_OFFSET: usize = CHECKSUM_OFFSET + CHECKSUM_SIZE;
-pub const PAGE_TYPE_SIZE: usize = 1;
-pub const FLAGS_OFFSET: usize = PAGE_TYPE_OFFSET + PAGE_TYPE_SIZE;
-pub const FLAGS_SIZE: usize = 1;
-pub const FREE_START_OFFSET: usize = FLAGS_OFFSET + FLAGS_SIZE;
-pub const FREE_START_SIZE: usize = 2;
-pub const FREE_END_OFFSET: usize = FREE_START_OFFSET + FREE_START_SIZE;
-pub const FREE_END_SIZE: usize = 2;
-pub const SPECIAL_OFFSET: usize = FREE_END_OFFSET + FREE_END_SIZE;
-pub const SPECIAL_SIZE: usize = 2;
-pub const SIZE_VERSION_OFFSET: usize = SPECIAL_OFFSET + SPECIAL_SIZE;
-pub const SIZE_VERSION_SIZE: usize = 2;
-pub const TXID_OFFSET: usize = SIZE_VERSION_OFFSET + SIZE_VERSION_SIZE;
-pub const TXID_SIZE: usize = 4;
+const LSN_OFFSET: usize = 0;
+const LSN_SIZE: usize = 8;
+const CHECKSUM_OFFSET: usize = LSN_OFFSET + LSN_SIZE;
+const CHECKSUM_SIZE: usize = 2;
+const PAGE_TYPE_OFFSET: usize = CHECKSUM_OFFSET + CHECKSUM_SIZE;
+const PAGE_TYPE_SIZE: usize = 1;
+const FLAGS_OFFSET: usize = PAGE_TYPE_OFFSET + PAGE_TYPE_SIZE;
+const FLAGS_SIZE: usize = 1;
+const FREE_START_OFFSET: usize = FLAGS_OFFSET + FLAGS_SIZE;
+const FREE_START_SIZE: usize = 2;
+const FREE_END_OFFSET: usize = FREE_START_OFFSET + FREE_START_SIZE;
+const FREE_END_SIZE: usize = 2;
+const SPECIAL_OFFSET: usize = FREE_END_OFFSET + FREE_END_SIZE;
+const SPECIAL_SIZE: usize = 2;
+const SIZE_VERSION_OFFSET: usize = SPECIAL_OFFSET + SPECIAL_SIZE;
+const SIZE_VERSION_SIZE: usize = 2;
+const TXID_OFFSET: usize = SIZE_VERSION_OFFSET + SIZE_VERSION_SIZE;
+const TXID_SIZE: usize = 4;
 
-const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
+pub(crate) const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
 const HEADER_SIZE_U16: u16 = HEADER_SIZE as u16;
 
 pub(crate) type Result<T> = std::result::Result<T, PageError>;
@@ -205,7 +205,7 @@ impl SlottedPage {
         }
     }
 
-    fn set_free_end(&mut self, offset: u16) -> Result<()> {
+    pub(crate) fn set_free_end(&mut self, offset: u16) -> Result<()> {
         debug_assert!(offset >= self.free_start() as u16);
         debug_assert!(offset >= HEADER_SIZE_U16);
 
@@ -493,6 +493,31 @@ impl SlottedPage {
         let free_start = self.free_start();
         let free_end = self.free_end();
 
+        if (cell.len() + ENTRY_SIZE) > free_end - free_start {
+            return Err(PageError::NoContigiousSpace);
+        }
+
+        let cell_start_offset = free_end - cell.len();
+
+        assert!(cell.len() <= u16::MAX as usize);
+        assert!(cell_start_offset <= u16::MAX as usize);
+
+        self.insert_slot_entry_at_index(
+            index,
+            SlotEntry::new(cell_start_offset as u16, cell.len() as u16),
+        )?;
+
+        // We now copy cell data into the free space
+        // SAFETY: We are copying from a valid slice to a valid memory location and not overlapping, we have checked
+        // the bounds of the free space and the cell data size is valid.
+        unsafe {
+            let cell_ptr = self.bytes.as_mut_ptr().add(cell_start_offset);
+            ptr::copy_nonoverlapping(cell.as_ptr(), cell_ptr, cell.len());
+        }
+
+        // IMPORTANT! Need to ensure we update free_end to reflect the change in page memory and free_space
+        self.set_free_end(cell_start_offset as u16)?;
+
         Ok(())
     }
 }
@@ -528,12 +553,6 @@ impl<'a> SlotRef<'a> {
     pub fn iter(&self) -> SlotDirIter<'_> {
         SlotDirIter::new(self.ptr, self.size)
     }
-}
-
-#[derive(Debug)]
-pub struct SlotEntry {
-    offset: u16,
-    length: u16,
 }
 
 pub struct SlotDirIter<'a> {
@@ -592,6 +611,18 @@ impl<'a> Iterator for SlotDirIter<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct SlotEntry {
+    offset: u16,
+    length: u16,
+}
+
+impl SlotEntry {
+    fn new(offset: u16, length: u16) -> Self {
+        SlotEntry { offset, length }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,6 +677,17 @@ mod tests {
     #[test]
     fn check_insert_entry_at_index() {
         let mut page = SlottedPage::default();
+        page.insert_slot_entry_at_index(
+            0,
+            SlotEntry {
+                offset: 20,
+                length: 10,
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic!("Failed to insert slot entry at index: {:?}", err);
+        });
+
         page.append_slot_entry(12, 100).unwrap();
         page.append_slot_entry(15, 150).unwrap();
         page.append_slot_entry(40, 200).unwrap();

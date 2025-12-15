@@ -1,7 +1,7 @@
 use std::ptr;
 
 mod raw_page;
-pub(crate) use raw_page::{PageError, SlottedPage};
+pub(crate) use raw_page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage};
 
 pub(crate) type RawPage = [u8; 4096];
 
