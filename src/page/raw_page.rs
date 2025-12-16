@@ -138,6 +138,10 @@ impl SlottedPage {
 
     // -----------------------
 
+    pub(crate) fn wipe_page(&mut self) {
+        self.bytes = [0u8; PAGE_SIZE];
+    }
+
     //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
     pub fn new_blank() -> Self {
         let mut buff = [0u8; PAGE_SIZE];

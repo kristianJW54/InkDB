@@ -1,0 +1,19 @@
+Need to understand MVCC Snapshots in b-tree and pages
+
+Need to understand what bitmap scans are
+
+Need to understand how VACUUMs work
+
+Need to understand ascending logic and locking
+
+Need to understand file offsets and blocks
+
+Need to understand how pins work and how they're different from latches
+
+Need to understand what suffix truncation is
+- Suffix truncations is taking a range of sub-keys and removing the trailing bytes at the first point they different
+- this is used to store separator keys
+- Prefix compression compresses keys stored downward
+Example suffix truncation = apple_green, apple_red -> apple_r (which would be the high_key/separator in the parent)
+
+Need to understand split page logic - byte aware splits?

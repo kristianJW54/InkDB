@@ -146,7 +146,7 @@ impl IndexPageOwned {
             false
         }
     }
-    // TODO Finish
+
     pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes
         let bytes = cell.0.as_ref();
@@ -188,13 +188,10 @@ impl<'page> IndexPageRef<'page> {
             }
         };
 
-        // TODO Sort out high_key
         let skip = if high_key { 1 } else { 0 };
 
         for se in self.data.slot_dir_ref().iter().skip(skip) {
-            println!("se {:?}", se);
             let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
-            println!("cell {:?}", cell);
             let cell_key = cell.get_key();
             if key < cell_key {
                 return Ok(Some(cell.get_child_ptr()));
@@ -352,5 +349,48 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result_id, PageID(2345 as u64));
+    }
+
+    #[test]
+    fn find_child_ptr_with_sibling() {
+        let mut index_page = IndexPageOwned::new(0);
+        index_page.set_level(IndexLevel::new(2));
+
+        // Now we add a cell to compare against and also have something in the slot_array
+        let cell = IndexCellOwned::new("Ford".as_bytes(), PageID::from(1234 as u64));
+        index_page
+            .add_cell_append_slot_entry(cell)
+            .unwrap_or_else(|err| {
+                panic!("Failed to add cell at append slot entry index: {:?}", err);
+            });
+
+        // Now we add in a sibling pointer that we want to return
+        let sibling_id = PageID(3456);
+        index_page.set_right_sibling(sibling_id.clone());
+
+        // We also have to add in the high_key which will be the lowest key in the sibling page
+        index_page
+            .add_cell_at_slot_entry_index(
+                0,
+                IndexCellOwned::new("Golf".as_bytes(), sibling_id.clone()),
+            )
+            .unwrap_or_else(|err| {
+                panic!("Failed to add cell at slot entry index: {:?}", err);
+            });
+
+        // Now we can find the child_ptr and should be returned a sibling id for us to continue searching
+
+        let frame =
+            PageFrame::new_frame_from_page(PageID(0), PageKind::Index, index_page.into_inner());
+
+        let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+
+        let result_id = index_ref
+            .find_child_ptr("Tesla".as_bytes())
+            .ok()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result_id, sibling_id);
     }
 }
