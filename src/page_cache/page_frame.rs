@@ -1,7 +1,7 @@
 use crate::page::SlottedPage;
 use crate::page::{PageID, PageKind, RawPage, SlotID};
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 // NOTE: Above PageFrame would be something like the b-tree node/tree
 
@@ -11,6 +11,7 @@ pub(crate) struct PageFrame {
     //txid?
     dirty: AtomicBool,
     inner_page: RwLock<SlottedPage>,
+    pin_count: AtomicUsize,
     // more meta data
 }
 
@@ -21,6 +22,7 @@ impl PageFrame {
             page_type,
             dirty: AtomicBool::new(false),
             inner_page: RwLock::new(page),
+            pin_count: AtomicUsize::new(0),
         }
     }
 

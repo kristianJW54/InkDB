@@ -194,7 +194,7 @@ impl<'page> IndexPageRef<'page> {
             let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
             let cell_key = cell.get_key();
             if key < cell_key {
-                return Ok(Some(cell.get_child_ptr()));
+                return Ok(Some(cell.get_value_ptr()));
             }
         }
         Ok(None)
@@ -273,7 +273,7 @@ impl<'index_page> IndexCell<'index_page> {
         }
     }
 
-    fn get_child_ptr(&self) -> PageID {
+    fn get_value_ptr(&self) -> PageID {
         // SAFETY: The cell is guaranteed to be at least 10 bytes long, and the child pointer is at offset 0.
         unsafe {
             let cell_ptr = self.cell.as_ptr().add(CHILD_PTR_OFFSET);
