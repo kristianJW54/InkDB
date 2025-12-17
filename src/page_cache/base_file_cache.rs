@@ -6,10 +6,43 @@
 
 //NOTE: We can also further optimise by
 
-use crate::page::PageID;
-use crate::page_cache::page_frame::PageFrame;
+use crate::page::{PageID, PageKind};
+use crate::page_cache::page_frame::{PageFrame, PageReadGuard, PageWriteGuard};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+pub(crate) type Result<T> = std::result::Result<T, PageCacheError>;
+
+#[derive(Debug)]
+pub(crate) enum PageCacheError {
+    PageAllocationFailed,
+}
+
+#[derive(Debug)]
+pub(crate) struct PageHandle {
+    page: Arc<PageFrame>,
+}
+
+impl PageHandle {
+    pub fn new(page: Arc<PageFrame>) -> Self {
+        Self { page }
+    }
+
+    pub fn read(&self) -> PageReadGuard<'_> {
+        self.page.page_read_guard()
+    }
+
+    pub fn write(&mut self) -> PageWriteGuard<'_> {
+        self.page.page_write_guard()
+    }
+}
+
+pub trait PageCache {
+    fn get(&self, page_id: PageID) -> Option<PageHandle>;
+    fn put(&self, page: PageFrame) -> Result<()>;
+    fn remove(&self, page_id: PageID) -> Result<()>;
+    fn allocate(&self, page_id: PageID, kind: PageKind) -> Result<PageHandle>;
+}
 
 pub struct BaseFileCache {
     pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
@@ -24,5 +57,35 @@ impl BaseFileCache {
         Self {
             cache: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl PageCache for BaseFileCache {
+    fn get(&self, page_id: PageID) -> Option<PageHandle> {
+        self.cache
+            .lock()
+            .unwrap()
+            .get(&page_id)
+            .map(|page| PageHandle { page: page.clone() })
+    }
+
+    fn put(&self, page: PageFrame) -> Result<()> {
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(page.page_id(), Arc::new(page));
+        Ok(())
+    }
+
+    fn remove(&self, page_id: PageID) -> Result<()> {
+        self.cache.lock().unwrap().remove(&page_id);
+        Ok(())
+    }
+
+    fn allocate(&self, page_id: PageID, kind: PageKind) -> Result<PageHandle> {
+        let page = PageFrame::new(page_id, kind);
+        self.put(page)?;
+        self.get(page_id)
+            .ok_or(PageCacheError::PageAllocationFailed)
     }
 }

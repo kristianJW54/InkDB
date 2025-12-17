@@ -1,7 +1,9 @@
 //------------------------- Page specific types ------------------------------//
 
 // Page types interpret over the slotted page for their type
-use crate::page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe};
+use crate::page::{
+    self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe,
+};
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
 use crate::page_cache::page_frame::{PageReadGuard, PageWriteGuard};
 use std::ops::Deref;
@@ -83,35 +85,41 @@ impl Deref for IndexCellOwned {
     }
 }
 
-pub struct IndexPageOwned(SlottedPage);
+pub(crate) struct IndexPageMut<'page> {
+    data: PageWriteGuard<'page>,
+}
 
-// TODO Implement IndexPageOwned
-impl IndexPageOwned {
-    pub(crate) fn new(lsn: u64) -> Self {
-        let mut page = SlottedPage::new_blank();
-        page.set_page_type(PageType::new(PageKind::Index as u8, 0).into());
-        page.set_special_offset(INDEX_SPECIAL_SIZE);
-
-        // Adjust free_end for special offset
-        if page
-            .set_free_end(PAGE_SIZE as u16 - INDEX_SPECIAL_SIZE)
-            .is_err()
-        {
-            panic!("Failed to set free end");
-        }
-
-        // Set lsn
-        page.set_lsn(lsn);
-
-        Self(page)
+impl<'page> IndexPageMut<'page> {
+    pub(crate) fn from_guard(data: PageWriteGuard<'page>) -> Self {
+        IndexPageMut { data }
     }
 
-    pub(crate) fn into_inner(self) -> SlottedPage {
-        self.0
+    pub(crate) fn init_in_place(&mut self, lsn: u64) -> Result<()> {
+        // We are given a slotted page from the allocator which we need to initialize
+        // This we can assume is being done during a split or tree operation and therefore we must be efficient
+
+        self.data.wipe_page();
+
+        self.data
+            .set_page_type(PageType::new(PageKind::Index as u8, 0).into());
+        self.data.set_special_offset(INDEX_SPECIAL_SIZE);
+
+        // Set free start to default HEADER_SIZE
+
+        self.data.set_free_start(HEADER_SIZE);
+
+        // Adjust free_end for special offset
+        self.data
+            .set_free_end(PAGE_SIZE as u16 - INDEX_SPECIAL_SIZE)?;
+
+        // Set lsn
+        self.data.set_lsn(lsn);
+
+        Ok(())
     }
 
     pub(crate) fn get_page_type(&self) -> PageType {
-        PageType::from(self.0.get_page_type())
+        PageType::from(self.data.get_page_type())
     }
 
     pub(crate) fn kind(&self) -> PageKind {
@@ -125,7 +133,7 @@ impl IndexPageOwned {
     pub(crate) fn set_level(&mut self, level: IndexLevel) {
         let mut new_pt = self.get_page_type();
         new_pt.set_subtype_page_bits(level.into());
-        self.0.set_page_type(new_pt.into())
+        self.data.set_page_type(new_pt.into())
     }
 
     // Special methods
@@ -133,14 +141,14 @@ impl IndexPageOwned {
     pub(crate) fn set_right_sibling(&mut self, page_id: PageID) {
         // Could use unsafe but since we are an owned struct building a SlottedPage we don't have a lock
         // and no others are waiting for access.
-        if let Ok(special) = self.0.get_special_mut() {
+        if let Ok(special) = self.data.get_special_mut() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8]
                 .copy_from_slice(page_id.into().to_le_bytes().as_ref());
         }
     }
 
     pub(crate) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.0.get_special_ref() {
+        if let Ok(special) = self.data.get_special_ref() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
         } else {
             false
@@ -150,7 +158,7 @@ impl IndexPageOwned {
     pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes
         let bytes = cell.0.as_ref();
-        self.0.add_cell_append_slot_entry(bytes)?;
+        self.data.add_cell_append_slot_entry(bytes)?;
         Ok(())
     }
 
@@ -161,13 +169,19 @@ impl IndexPageOwned {
     ) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes in the RawPage
         let bytes = cell.deref();
-        self.0.add_cell_at_slot_entry_index(index, bytes)?;
+        self.data.add_cell_at_slot_entry_index(index, bytes)?;
         Ok(())
     }
 }
 
 pub(crate) struct IndexPageRef<'page> {
     data: PageReadGuard<'page>,
+}
+
+impl Drop for IndexPageRef<'_> {
+    fn drop(&mut self) {
+        drop(self);
+    }
 }
 
 impl<'page> IndexPageRef<'page> {
@@ -211,7 +225,6 @@ impl<'page> IndexPageRef<'page> {
     }
 
     pub(crate) fn get_page_type(&self) -> PageType {
-        println!("page_type = {}", self.data.get_page_type());
         PageType::from(self.data.get_page_type())
     }
 
@@ -286,74 +299,109 @@ impl<'index_page> IndexCell<'index_page> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page_cache::page_frame::PageFrame;
-
-    #[test]
-    fn index_special_space() {
-        let index_page = IndexPageOwned::new(0);
-        let mut page = index_page.into_inner();
-        let space = page.get_special_mut().unwrap();
-    }
+    use crate::page_cache::base_file_cache::BaseFileCache;
+    use crate::page_cache::base_file_cache::PageCache;
 
     #[test]
     fn index_page_type() {
-        let mut index_page = IndexPageOwned::new(0);
-        println!("page type = {:?}", index_page.kind());
-        println!("page level = {:?}", index_page.level());
-        println!("has right sibling = {:?}", index_page.has_right_sibling());
+        let cache = BaseFileCache::new();
 
-        index_page.set_level(IndexLevel::new(2));
-        index_page.set_right_sibling(PageID(1234));
-        println!("page type = {:?}", index_page.kind());
-        println!("page new level = {:?}", index_page.level());
-        println!("has right sibling = {:?}", index_page.has_right_sibling());
+        let mut page = cache
+            .allocate(PageID(1234 as u64), PageKind::Index)
+            .unwrap();
+        {
+            let mut index_page = IndexPageMut::from_guard(page.write());
+            index_page.init_in_place(0).unwrap_or_else(|err| {
+                panic!("Failed to initialize index page: {:?}", err);
+            });
 
-        let page = index_page.into_inner();
-        let frame = PageFrame::new_frame_from_page(PageID(0), PageKind::Index, page);
-        let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+            println!("page type = {:?}", index_page.kind());
+            println!("page level = {:?}", index_page.level());
+            println!("has right sibling = {:?}", index_page.has_right_sibling());
 
-        println!("index ref level = {:?}", index_ref.level());
-        println!("page id = {:?}", index_ref.get_right_sibling());
+            index_page.set_level(IndexLevel::new(2));
+            index_page.set_right_sibling(PageID(1234));
+            println!("page type = {:?}", index_page.kind());
+            println!("page new level = {:?}", index_page.level());
+            println!("has right sibling = {:?}", index_page.has_right_sibling());
+        }
+
+        {
+            let handle = cache.get(PageID(1234)).unwrap_or_else(|| {
+                panic!("Failed to get page handle");
+            });
+            let index_ref = IndexPageRef::from_guard(handle.read());
+
+            println!("index ref level = {:?}", index_ref.level());
+            println!("page id = {:?}", index_ref.get_right_sibling());
+        }
     }
 
     #[test]
     fn find_child_ptr() {
-        let mut index_page = IndexPageOwned::new(0);
-        index_page.set_level(IndexLevel::new(2));
-        println!("BMW as bytes = {:?}", "BMW".as_bytes());
-        // Now we want to test if adding a cell at a particular index works correctly
-        let cell = IndexCellOwned::new("BMW".as_bytes(), PageID::from(3456 as u64));
-        index_page
-            .add_cell_at_slot_entry_index(0, cell)
-            .unwrap_or_else(|err| {
-                panic!("Failed to add cell at slot entry index: {:?}", err);
-            });
+        let cache = BaseFileCache::new();
 
-        index_page
-            .add_cell_append_slot_entry(IndexCellOwned::new(
-                "Tesla".as_bytes(),
-                PageID::from(2345 as u64),
-            ))
-            .unwrap_or_else(|err| {
-                panic!("Failed to add cell at append slot entry index: {:?}", err);
-            });
-
-        let frame =
-            PageFrame::new_frame_from_page(PageID(0), PageKind::Index, index_page.into_inner());
-
-        let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
-
-        let result_id = index_ref
-            .find_child_ptr("Ford".as_bytes())
-            .ok()
-            .unwrap()
+        let mut page = cache
+            .allocate(PageID(1234 as u64), PageKind::Index)
             .unwrap();
-        assert_eq!(result_id, PageID(2345 as u64));
+
+        {
+            let mut index_page = IndexPageMut::from_guard(page.write());
+            index_page.init_in_place(0).unwrap_or_else(|err| {
+                panic!("Failed to initialize index page: {:?}", err);
+            });
+
+            index_page.set_level(IndexLevel::new(2));
+
+            println!("BMW as bytes = {:?}", "BMW".as_bytes());
+            // Now we want to test if adding a cell at a particular index works correctly
+            let cell = IndexCellOwned::new("BMW".as_bytes(), PageID::from(3456 as u64));
+            index_page
+                .add_cell_at_slot_entry_index(0, cell)
+                .unwrap_or_else(|err| {
+                    panic!("Failed to add cell at slot entry index: {:?}", err);
+                });
+
+            index_page
+                .add_cell_append_slot_entry(IndexCellOwned::new(
+                    "Tesla".as_bytes(),
+                    PageID::from(2345 as u64),
+                ))
+                .unwrap_or_else(|err| {
+                    panic!("Failed to add cell at append slot entry index: {:?}", err);
+                });
+        }
+
+        {
+            let frame = cache.get(PageID(1234)).unwrap_or_else(|| {
+                panic!("Failed to get page from cache");
+            });
+
+            let index_ref = IndexPageRef::from_guard(frame.read());
+
+            let result_id = index_ref
+                .find_child_ptr("Ford".as_bytes())
+                .ok()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result_id, PageID(2345 as u64));
+        }
     }
 
+    // TODO Finish format of test
     #[test]
     fn find_child_ptr_with_sibling() {
-        let mut index_page = IndexPageOwned::new(0);
+        let cache = BaseFileCache::new();
+
+        let mut page = cache
+            .allocate(PageID(1234 as u64), PageKind::Index)
+            .unwrap();
+
+        let mut index_page = IndexPageMut::from_guard(page.write());
+        index_page.init_in_place(0).unwrap_or_else(|err| {
+            panic!("Failed to initialize index page: {:?}", err);
+        });
+
         index_page.set_level(IndexLevel::new(2));
 
         // Now we add a cell to compare against and also have something in the slot_array
@@ -380,10 +428,12 @@ mod tests {
 
         // Now we can find the child_ptr and should be returned a sibling id for us to continue searching
 
-        let frame =
-            PageFrame::new_frame_from_page(PageID(0), PageKind::Index, index_page.into_inner());
+        drop(index_page);
 
-        let index_ref = IndexPageRef::from_guard(frame.page_read_guard());
+        let frame = cache.get(PageID(1234)).unwrap_or_else(|| {
+            panic!("Failed to get page from cache");
+        });
+        let index_ref = IndexPageRef::from_guard(frame.read());
 
         let result_id = index_ref
             .find_child_ptr("Tesla".as_bytes())

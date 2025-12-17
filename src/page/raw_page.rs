@@ -182,6 +182,17 @@ impl SlottedPage {
     }
 
     #[inline(always)]
+    pub(crate) fn set_free_start(&mut self, offset: usize) {
+        debug_assert!(offset >= HEADER_SIZE);
+        debug_assert!(offset <= PAGE_SIZE);
+
+        unsafe {
+            let page_ptr = self.bytes.as_mut_ptr().add(FREE_START_OFFSET);
+            write_u16_le_unsafe(page_ptr, offset as u16);
+        }
+    }
+
+    #[inline(always)]
     fn increment_free_start(&mut self, bytes: usize) -> Result<usize> {
         let cur_fs = self.free_start();
         let new_fs = cur_fs + bytes;
@@ -209,11 +220,11 @@ impl SlottedPage {
         }
     }
 
+    #[inline]
     pub(crate) fn set_free_end(&mut self, offset: u16) -> Result<()> {
-        debug_assert!(offset >= self.free_start() as u16);
         debug_assert!(offset >= HEADER_SIZE_U16);
 
-        if offset < self.free_start() as u16 {
+        if offset < self.free_start() as u16 || offset < HEADER_SIZE_U16 {
             return Err(PageError::InvalidFreeEnd(offset));
         }
 

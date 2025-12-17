@@ -3,9 +3,11 @@ use crate::page::{PageID, PageKind, RawPage, SlotID};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
 // NOTE: Above PageFrame would be something like the b-tree node/tree
 
-pub(crate) struct PageFrame {
+#[derive(Debug)]
+pub(super) struct PageFrame {
     id: PageID,
     page_type: PageKind,
     //txid?
@@ -16,7 +18,8 @@ pub(crate) struct PageFrame {
 }
 
 impl PageFrame {
-    pub(crate) fn new_frame_from_page(id: PageID, page_type: PageKind, page: SlottedPage) -> Self {
+    pub(super) fn new(id: PageID, page_type: PageKind) -> Self {
+        let page = SlottedPage::new_blank();
         Self {
             id,
             page_type,
@@ -26,19 +29,23 @@ impl PageFrame {
         }
     }
 
-    pub(crate) fn page_read_guard<'page>(&self) -> PageReadGuard<'_> {
+    pub(crate) fn page_id(&self) -> PageID {
+        self.id
+    }
+
+    pub(super) fn page_read_guard<'page>(&self) -> PageReadGuard<'_> {
         PageReadGuard {
             latch_read: self.inner_page.read().unwrap(),
         }
     }
 
-    pub(crate) fn page_write_guard<'page>(&self) -> PageWriteGuard<'_> {
+    pub(super) fn page_write_guard<'page>(&self) -> PageWriteGuard<'_> {
         PageWriteGuard {
             latch_write: self.inner_page.write().unwrap(),
         }
     }
 
-    pub(crate) fn page_type(&self) -> PageKind {
+    pub(super) fn page_type(&self) -> PageKind {
         self.page_type
     }
 }

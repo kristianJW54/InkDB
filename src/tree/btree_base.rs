@@ -1,3 +1,6 @@
+use crate::index::index_page::IndexPageError;
+use crate::page::PageID;
+use crate::transaction::tx_memory::TxMemory;
 use crate::tree::btree::Blink;
 // Layers
 // B_inner - base of the b_tree used for traversal and algorithmic logic - coordinating operations
@@ -15,13 +18,36 @@ use crate::tree::btree::Blink;
     - Repair incomplete splits (sometimes lazily)
 */
 
+pub(super) type Result<T> = std::result::Result<T, BTreeInnerError>;
+
+pub(super) enum BTreeInnerError {
+    // Define error variants here
+    IndexPageError(IndexPageError),
+}
+
+impl From<IndexPageError> for BTreeInnerError {
+    fn from(err: IndexPageError) -> Self {
+        BTreeInnerError::IndexPageError(err)
+    }
+}
+
 pub(super) struct BInner<'blink> {
-    tree: &'blink Blink,
+    tx: &'blink TxMemory,
 }
 
 impl<'blink> BInner<'blink> {
-    pub fn new(tree: &'blink Blink) -> Self {
-        Self { tree }
+    pub fn new(tx: &'blink TxMemory) -> Self {
+        Self { tx }
+    }
+
+    pub(super) fn traverse(&self, page: PageID, key: &[u8]) -> Result<PageID> {
+        // Traversal assumes that the calling B-tree has fetched the root/fast root from the meta page and hands
+        // over the page ID to start traversal from.
+
+        // We want to traverse down on the key starting from the page
+        let mut current_page = self.tx.cache.get(page);
+
+        Ok(PageID(0))
     }
 }
 
