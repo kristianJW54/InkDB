@@ -1,5 +1,6 @@
 use std::ptr;
-
+pub mod index_page;
+pub mod leaf;
 mod raw_page;
 pub(crate) use raw_page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage};
 
@@ -19,6 +20,8 @@ impl From<u64> for PageID {
         Self(value)
     }
 }
+
+// TODO May need to implement PageID resolver for pointer address and offset from page id
 
 #[derive(Eq, Hash, PartialEq, Debug)]
 pub(crate) struct SlotID(pub u16);

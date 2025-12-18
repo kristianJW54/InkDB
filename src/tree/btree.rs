@@ -1,5 +1,5 @@
+use crate::buffer::page_cache::PageHandle;
 use crate::page::PageID;
-use crate::page_cache::base_file_cache::PageHandle;
 use crate::transaction::tx_memory::TxMemory;
 use std::sync::Arc;
 

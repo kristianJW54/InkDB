@@ -1,11 +1,11 @@
 //------------------------- Page specific types ------------------------------//
 
 // Page types interpret over the slotted page for their type
+use crate::buffer::page_frame::{PageReadGuard, PageWriteGuard};
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe,
 };
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
-use crate::page_cache::page_frame::{PageReadGuard, PageWriteGuard};
 use std::ops::Deref;
 use std::slice::from_raw_parts;
 
@@ -299,8 +299,8 @@ impl<'index_page> IndexCell<'index_page> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page_cache::base_file_cache::BaseFileCache;
-    use crate::page_cache::base_file_cache::PageCache;
+    use crate::buffer::page_cache::BaseFileCache;
+    use crate::buffer::page_cache::PageCache;
 
     #[test]
     fn index_page_type() {

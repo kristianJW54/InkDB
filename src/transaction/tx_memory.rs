@@ -1,4 +1,4 @@
-use crate::page_cache::base_file_cache::{BaseFileCache, PageCache};
+use crate::buffer::page_cache::{BaseFileCache, PageCache};
 use std::sync::Arc;
 
 pub(crate) struct TxMemory {
