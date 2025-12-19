@@ -13,6 +13,11 @@ impl PageID {
     pub(crate) fn into(self) -> u64 {
         self.0
     }
+
+    #[inline(always)]
+    pub(crate) fn to_offset(&self) -> u64 {
+        self.0 * PAGE_SIZE as u64
+    }
 }
 
 impl From<u64> for PageID {

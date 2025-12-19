@@ -25,6 +25,9 @@ impl From<PageError> for IndexPageError {
     }
 }
 
+const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
+const RIGHT_SIBLING_OFFSET: usize = 8;
+
 // TODO Integrate Level into rest of IndexPage
 
 pub(crate) struct IndexCellOwned(Box<[u8]>);
