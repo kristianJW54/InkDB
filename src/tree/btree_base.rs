@@ -1,5 +1,5 @@
 use crate::page::PageID;
-use crate::page::index_page::IndexPageError;
+use crate::page::internal_page::IndexPageError;
 use crate::transaction::tx_memory::TxMemory;
 use crate::tree::btree::Blink;
 // Layers

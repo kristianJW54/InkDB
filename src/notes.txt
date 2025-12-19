@@ -24,3 +24,6 @@ Need to understand split page logic - byte aware splits?
 
 // Confirmed that there is one cache for pages UNLESS we pin to memory
 // Confirmed there is one lock for pages which resides in the cache/mapping table UNLESS we pin to memory
+
+// Steps forward is to have 3 elements [Mapping table - Buffer, PageManager] PageManager will coordinate and wire up the mapping table with the buffer
+// Calling code such as tree will only interact with the PageManager
