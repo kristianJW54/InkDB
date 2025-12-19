@@ -19,4 +19,27 @@
 
 */
 
+// A mapping entry is not a page, it is an authorative representation of a logical page either in memory or on disk
+
 // Start with the rw lock bits and then logic
+
+// For simplicity we will use a hash table/map
+//
+//
+//INVARIANT:
+// For internal pages, the mapping table stores only location.
+// The internal frame’s version lock is the sole logical lock.
+
+// MappingEntry.location may change only while holding
+// the internal frame’s exclusive version lock.
+
+// Readers must validate the frame version after dereferencing
+// the mapping entry pointer.
+
+pub(crate) trait PageMap {
+    fn get(&self, page_id: PageID);
+}
+
+struct NaiveMappingTable {
+    map: RwLock<HashMap<PageID, MappingEntry>>,
+}

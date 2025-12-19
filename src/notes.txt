@@ -17,3 +17,10 @@ Need to understand what suffix truncation is
 Example suffix truncation = apple_green, apple_red -> apple_r (which would be the high_key/separator in the parent)
 
 Need to understand split page logic - byte aware splits?
+
+// Need pin logic for internal pages - if pinned directly address from arena, if not then go through cache
+// Need better lock for internal maybe optimistic version locking
+
+
+// Confirmed that there is one cache for pages UNLESS we pin to memory
+// Confirmed there is one lock for pages which resides in the cache/mapping table UNLESS we pin to memory

@@ -1,7 +1,8 @@
 //------------------------- Page specific types ------------------------------//
 
+// We want to look at fences - look at prefix compression and look ahead
+
 // Page types interpret over the slotted page for their type
-use crate::buffer::page_frame::{PageReadGuard, PageWriteGuard};
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe,
 };
@@ -21,40 +22,6 @@ pub(crate) enum IndexPageError {
 impl From<PageError> for IndexPageError {
     fn from(error: PageError) -> Self {
         IndexPageError::PageError(error)
-    }
-}
-
-const INDEX_SPECIAL_SIZE: u16 = size_of::<IndexTail>() as u16;
-const RIGHT_SIBLING_OFFSET: usize = 8;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct IndexTail {
-    right_sibling: PageID,
-    left_sibling: PageID,
-}
-
-// Levels for the index page
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct IndexLevel(pub u8);
-
-impl IndexLevel {
-    pub(crate) const MAX: u8 = 15;
-
-    pub(crate) fn new(level: u8) -> Self {
-        assert!(level <= Self::MAX, "Max level for bit field is 15");
-        Self(level)
-    }
-
-    pub(crate) fn into(self) -> u8 {
-        self.0
-    }
-}
-
-impl From<u8> for IndexLevel {
-    fn from(value: u8) -> IndexLevel {
-        IndexLevel::new(value)
     }
 }
 
@@ -86,40 +53,36 @@ impl Deref for IndexCellOwned {
 }
 
 pub(crate) struct IndexPageMut<'page> {
-    data: PageWriteGuard<'page>,
+    page: &'page mut SlottedPage,
 }
 
 impl<'page> IndexPageMut<'page> {
-    pub(crate) fn from_guard(data: PageWriteGuard<'page>) -> Self {
-        IndexPageMut { data }
-    }
-
     pub(crate) fn init_in_place(&mut self, lsn: u64) -> Result<()> {
         // We are given a slotted page from the allocator which we need to initialize
         // This we can assume is being done during a split or tree operation and therefore we must be efficient
 
-        self.data.wipe_page();
+        self.page.wipe_page();
 
-        self.data
+        self.page
             .set_page_type(PageType::new(PageKind::Index as u8, 0).into());
-        self.data.set_special_offset(INDEX_SPECIAL_SIZE);
+        self.page.set_special_offset(INDEX_SPECIAL_SIZE);
 
         // Set free start to default HEADER_SIZE
 
-        self.data.set_free_start(HEADER_SIZE);
+        self.page.set_free_start(HEADER_SIZE);
 
         // Adjust free_end for special offset
-        self.data
+        self.page
             .set_free_end(PAGE_SIZE as u16 - INDEX_SPECIAL_SIZE)?;
 
         // Set lsn
-        self.data.set_lsn(lsn);
+        self.page.set_lsn(lsn);
 
         Ok(())
     }
 
     pub(crate) fn get_page_type(&self) -> PageType {
-        PageType::from(self.data.get_page_type())
+        PageType::from(self.page.get_page_type())
     }
 
     pub(crate) fn kind(&self) -> PageKind {
@@ -133,7 +96,7 @@ impl<'page> IndexPageMut<'page> {
     pub(crate) fn set_level(&mut self, level: IndexLevel) {
         let mut new_pt = self.get_page_type();
         new_pt.set_subtype_page_bits(level.into());
-        self.data.set_page_type(new_pt.into())
+        self.page.set_page_type(new_pt.into())
     }
 
     // Special methods
@@ -141,14 +104,14 @@ impl<'page> IndexPageMut<'page> {
     pub(crate) fn set_right_sibling(&mut self, page_id: PageID) {
         // Could use unsafe but since we are an owned struct building a SlottedPage we don't have a lock
         // and no others are waiting for access.
-        if let Ok(special) = self.data.get_special_mut() {
+        if let Ok(special) = self.page.get_special_mut() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8]
                 .copy_from_slice(page_id.into().to_le_bytes().as_ref());
         }
     }
 
     pub(crate) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.data.get_special_ref() {
+        if let Ok(special) = self.page.get_special_ref() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
         } else {
             false
@@ -158,7 +121,7 @@ impl<'page> IndexPageMut<'page> {
     pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes
         let bytes = cell.0.as_ref();
-        self.data.add_cell_append_slot_entry(bytes)?;
+        self.page.add_cell_append_slot_entry(bytes)?;
         Ok(())
     }
 
@@ -169,13 +132,13 @@ impl<'page> IndexPageMut<'page> {
     ) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes in the RawPage
         let bytes = cell.deref();
-        self.data.add_cell_at_slot_entry_index(index, bytes)?;
+        self.page.add_cell_at_slot_entry_index(index, bytes)?;
         Ok(())
     }
 }
 
 pub(crate) struct IndexPageRef<'page> {
-    data: PageReadGuard<'page>,
+    page: PageReadGuard<'page>,
 }
 
 impl Drop for IndexPageRef<'_> {
@@ -186,7 +149,7 @@ impl Drop for IndexPageRef<'_> {
 
 impl<'page> IndexPageRef<'page> {
     pub(crate) fn from_guard(guard: PageReadGuard<'page>) -> Self {
-        Self { data: guard }
+        Self { page: guard }
     }
 
     pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
@@ -194,7 +157,7 @@ impl<'page> IndexPageRef<'page> {
         if self.has_right_sibling() {
             //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
             // and give a wrapped error with context
-            let hkc = self.data.cell_slice_from_id(SlotID(0))?;
+            let hkc = self.page.cell_slice_from_id(SlotID(0))?;
             let high_key_cell = IndexCell::from(hkc);
             high_key = true;
             if key > high_key_cell.get_key() {
@@ -204,8 +167,8 @@ impl<'page> IndexPageRef<'page> {
 
         let skip = if high_key { 1 } else { 0 };
 
-        for se in self.data.slot_dir_ref().iter().skip(skip) {
-            let cell = IndexCell::from(self.data.cell_slice_from_entry(se));
+        for se in self.page.slot_dir_ref().iter().skip(skip) {
+            let cell = IndexCell::from(self.page.cell_slice_from_entry(se));
             let cell_key = cell.get_key();
             if key < cell_key {
                 return Ok(Some(cell.get_value_ptr()));
@@ -217,7 +180,7 @@ impl<'page> IndexPageRef<'page> {
     //
 
     pub(crate) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.data.get_special_ref() {
+        if let Ok(special) = self.page.get_special_ref() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
         } else {
             false
@@ -225,7 +188,7 @@ impl<'page> IndexPageRef<'page> {
     }
 
     pub(crate) fn get_page_type(&self) -> PageType {
-        PageType::from(self.data.get_page_type())
+        PageType::from(self.page.get_page_type())
     }
 
     pub(crate) fn level(&self) -> IndexLevel {
@@ -233,7 +196,7 @@ impl<'page> IndexPageRef<'page> {
     }
 
     pub(crate) fn get_right_sibling(&self) -> Option<PageID> {
-        let special = self.data.get_special_ref().ok()?;
+        let special = self.page.get_special_ref().ok()?;
         // TODO Add safety info
         unsafe {
             let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);

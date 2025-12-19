@@ -1,5 +1,5 @@
-use std::ptr;
-pub mod index_page;
+use std::ptr::NonNull;
+pub mod internal_page;
 pub mod leaf;
 mod raw_page;
 pub(crate) use raw_page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage};
@@ -73,16 +73,20 @@ pub(super) const SUBTYPE_MASK: u8 = 0b1111_0000;
 
 const PT_UNDEFINED: u8 = 0b000_0000;
 const PT_HEAP: u8 = 0b0000_0001;
-const PT_INDEX: u8 = 0b0000_0010;
-const PT_META: u8 = 0b0000_0011;
-const PT_FREE: u8 = 0b0000_0100;
+const PT_INDEX_INTERNAL: u8 = 0b0000_0010;
+const PT_INDEX_MINI_LEAF: u8 = 0b0000_0011;
+const PT_INDEX_LEAF: u8 = 0b0000_0100;
+const PT_META: u8 = 0b0000_0101;
+const PT_FREE: u8 = 0b0000_0110;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PageKind {
     Heap = 0x01,
-    Index = 0x02,
-    Meta = 0x03,
-    Free = 0x04,
+    IndexInternal = 0x02,
+    IndexMiniLeaf = 0x03,
+    IndexLeaf = 0x04,
+    Meta = 0x05,
+    Free = 0x06,
     Undefined = 0xFF,
     // Up to 15...
 }
@@ -92,7 +96,9 @@ impl PageKind {
         Some(match pt {
             PT_UNDEFINED => PageKind::Undefined,
             PT_HEAP => PageKind::Heap,
-            PT_INDEX => PageKind::Index,
+            PT_INDEX_INTERNAL => PageKind::IndexInternal,
+            PT_INDEX_MINI_LEAF => PageKind::IndexMiniLeaf,
+            PT_INDEX_LEAF => PageKind::IndexLeaf,
             PT_META => PageKind::Meta,
             PT_FREE => PageKind::Free,
             _ => return None,
@@ -243,6 +249,37 @@ impl PageFlags {
 
         flags
     }
+}
+
+// Levels for the index page
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexLevel(pub u8);
+
+impl IndexLevel {
+    pub(crate) const MAX: u8 = 15;
+
+    pub(crate) fn new(level: u8) -> Self {
+        assert!(level <= Self::MAX, "Max level for bit field is 15");
+        Self(level)
+    }
+
+    pub(crate) fn into(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<u8> for IndexLevel {
+    fn from(value: u8) -> IndexLevel {
+        IndexLevel::new(value)
+    }
+}
+
+// Access enum for index internal pages
+
+pub(crate) enum InternalPageAccess {
+    Pinned(NonNull<InternalPageFrame>),
+    Mapped(PageID),
 }
 
 // TODO - Have mod tests for all files within
