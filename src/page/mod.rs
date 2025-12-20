@@ -1,4 +1,4 @@
-use std::ptr::NonNull;
+use std::ptr;
 pub mod internal_page;
 pub mod leaf;
 mod raw_page;
@@ -278,13 +278,6 @@ impl From<u8> for IndexLevel {
     fn from(value: u8) -> IndexLevel {
         IndexLevel::new(value)
     }
-}
-
-// Access enum for index internal pages
-
-pub(crate) enum InternalPageAccess {
-    Pinned(NonNull<InternalPageFrame>),
-    Mapped(PageID),
 }
 
 // TODO - Have mod tests for all files within

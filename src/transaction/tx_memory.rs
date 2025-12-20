@@ -1,8 +1,7 @@
-use crate::buffer::page_cache::{BaseFileCache, PageCache};
 use std::sync::Arc;
 
 pub(crate) struct TxMemory {
-    pub cache: Arc<dyn PageCache>,
+    pub cache: Arc<()>,
     // allocator
     pub id: u64,
     // snapshot?
@@ -11,7 +10,7 @@ pub(crate) struct TxMemory {
 // NOTE: On page creation we embed the max transaction id into the page
 
 impl TxMemory {
-    pub fn new_fake_tx(id: u64, cache: Arc<dyn PageCache>) -> Self {
+    pub fn new_fake_tx(id: u64, cache: Arc<()>) -> Self {
         Self { cache, id }
     }
 }

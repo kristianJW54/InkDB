@@ -1,7 +1,6 @@
 use crate::page::PageID;
 use crate::page::internal_page::IndexPageError;
 use crate::transaction::tx_memory::TxMemory;
-use crate::tree::btree::Blink;
 // Layers
 // B_inner - base of the b_tree used for traversal and algorithmic logic - coordinating operations
 //
@@ -45,7 +44,6 @@ impl<'blink> BInner<'blink> {
         // over the page ID to start traversal from.
 
         // We want to traverse down on the key starting from the page
-        let mut current_page = self.tx.cache.get(page);
 
         Ok(PageID(0))
     }

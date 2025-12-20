@@ -44,18 +44,78 @@ use std::sync::{Arc, RwLock};
 
 // For table entry we can use a small atomic state to allow threads to do double-checking for any misses and loading to disk - for this we can use a small enum,
 // along with CAS and Ordering
+// https://preshing.com/20130930/double-checked-locking-is-fixed-in-cpp11/
+
+struct PageTableState(AtomicU8);
+
+pub(crate) enum PageTableResult {
+    Disk(u64),
+    Memory(usize),
+}
 
 pub(crate) struct PageTableEntry {
-    frame: usize,
-    state: AtomicU8,
+    frame: PageTableResult,
+    state: PageTableState,
+}
+
+impl PageTableEntry {
+    fn check_and_swap(&mut self, store: u8) {}
 }
 
 pub(crate) type PageTableHandle = Arc<PageTableEntry>;
 
 pub(crate) trait PageTable {
-    fn get(&self, page_id: PageID) -> Option<PageTableHandle>;
+    fn get(&self, page_id: PageID) -> Option<PageTableHandle>; // We return a handle here so the buffer manager can load from disk and flip the state and change the frame address
+    fn insert(&self, page_id: PageID, entry: PageTableEntry);
 }
 
 struct NaiveMappingTable {
     map: RwLock<HashMap<PageID, PageTableHandle>>,
+}
+
+impl NaiveMappingTable {
+    pub(crate) fn new() -> Self {
+        NaiveMappingTable {
+            map: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl PageTable for NaiveMappingTable {
+    fn get(&self, page_id: PageID) -> Option<PageTableHandle> {
+        self.map.read().unwrap().get(&page_id).cloned()
+    }
+    fn insert(&self, page_id: PageID, entry: PageTableEntry) {
+        self.map.write().unwrap().insert(page_id, Arc::new(entry));
+    }
+}
+
+#[test]
+fn test_atomics() {
+    struct BufferManager {
+        table: Arc<dyn PageTable>,
+    }
+
+    let mut bm = BufferManager {
+        table: Arc::new(NaiveMappingTable::new()),
+    };
+
+    let page_id = PageID(1234);
+
+    let entry = PageTableEntry {
+        frame: PageTableResult::Disk(page_id.into()),
+        state: PageTableState(AtomicU8::new(0)),
+    };
+
+    bm.table.insert(page_id, entry);
+
+    let handle = bm.table.get(page_id).unwrap();
+
+    match handle.frame {
+        PageTableResult::Disk(addr) => println!("Disk address: {}", addr),
+        PageTableResult::Memory(addr) => println!("Memory address: {}", addr),
+    }
+
+    // Now we need to have two threads access the entry and read it - both will see that it is disk and will need to load and change it
+    // only one can do so, the other will have to wait and read it again
 }
