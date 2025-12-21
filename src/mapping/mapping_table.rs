@@ -46,6 +46,10 @@ use std::sync::{Arc, RwLock};
 // along with CAS and Ordering
 // https://preshing.com/20130930/double-checked-locking-is-fixed-in-cpp11/
 
+pub(crate) const PT_IN_MEMORY: u8 = 0b000_0001;
+pub(crate) const PT_ON_DISK: u8 = 0b000_0010;
+pub(crate) const PT_LOADING: u8 = 0b000_0100;
+
 struct PageTableState(AtomicU8);
 
 pub(crate) enum PageTableResult {
