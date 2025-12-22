@@ -1,6 +1,9 @@
-//
-
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU8, Ordering};
+
+// For table entry we can use a small atomic state to allow threads to do double-checking for any misses and loading to disk,
+// along with CAS and Ordering
+// https://preshing.com/20130930/double-checked-locking-is-fixed-in-cpp11/
 
 const SPIN_LIMIT: u8 = 10;
 const YIELD_LIMIT: u8 = 50;
@@ -10,20 +13,50 @@ const PT_LOADING: u8 = 1;
 const PT_IN_MEMORY: u8 = 2;
 const PT_INVALID: u8 = 3;
 
-pub(crate) struct PageTableLatch<T: Clone> {
+pub(super) struct PageTableLatch<T: Clone> {
     state: AtomicU8,
-    data: T,
+    data: UnsafeCell<T>,
 }
+
+unsafe impl<T: Clone> Sync for PageTableLatch<T> {}
+unsafe impl<T: Clone> Send for PageTableLatch<T> {}
 
 impl<T: Clone> PageTableLatch<T> {
     pub(crate) fn new(data: T) -> Self {
         Self {
             state: AtomicU8::new(PT_ON_DISK),
-            data,
+            data: UnsafeCell::new(data),
         }
     }
 
-    pub(crate) fn fetch(&self) -> Result<T, String> {
+    pub(super) fn state(&self) -> u8 {
+        let state = self.state.load(Ordering::Acquire);
+
+        match state {
+            PT_IN_MEMORY => PT_IN_MEMORY,
+            PT_LOADING => PT_LOADING,
+            PT_ON_DISK => PT_ON_DISK,
+            _ => PT_INVALID,
+        }
+    }
+
+    // Returns the current latch state (raw)
+    pub(super) fn current_state(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
+
+    pub(super) fn peek(&self) -> (u8, T) {
+        // Read the state using Ordering::Acquire so we can sync with any loader
+        let state = self.state.load(Ordering::Acquire);
+        // SAFETY: We are able to read the data because we have loaded the state with the correct ordering
+        let data = unsafe { &*self.data.get() }.clone();
+        (state, data)
+    }
+
+    pub(super) fn switch_latch(
+        &self,
+        work: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         // We need to loop and use CAS for one loader many writers - first thread gets the load
 
         let mut spin_count = 0;
@@ -37,7 +70,8 @@ impl<T: Clone> PageTableLatch<T> {
             match state {
                 // Fast path is we are in-memory and can return
                 PT_IN_MEMORY => {
-                    return Ok(self.data.clone());
+                    let res = unsafe { &*self.data.get() }.clone();
+                    return Ok(res);
                 }
                 PT_ON_DISK => {
                     // We need to use double checking with CAS in order to compete for loading
@@ -48,9 +82,15 @@ impl<T: Clone> PageTableLatch<T> {
                         Ordering::Acquire,
                     ) {
                         // Do work
-                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        let loaded = work()?;
+                        // We now need to update the loaded data to self
+                        //
+                        // SAFETY: We are the only thread that can access this data due to the fact that we won the CAS and the state is now PT_LOADING
+                        // We used the correct ordering to ensure that the data is loaded before the state is updated
+                        // And after we update the data, we ensure that we store using Ordering::Release to ensure that the data is visible to other threads
+                        unsafe { *self.data.get() = loaded.clone() };
                         self.state.store(PT_IN_MEMORY, Ordering::Release);
-                        return Ok(self.data.clone());
+                        return Ok(loaded);
                     } else {
                         continue;
                     }
@@ -88,10 +128,8 @@ mod tests {
 
     #[test]
     fn page_latch_thread_benches() {
-        // 1,000 threads test trying to access a key which is on_disk and only one thread can load it
-
         let latch = Arc::new(PageTableLatch {
-            data: 10,
+            data: UnsafeCell::new(10),
             state: AtomicU8::new(PT_IN_MEMORY),
         });
 
@@ -114,7 +152,12 @@ mod tests {
                 handles.push(std::thread::spawn(move || {
                     thread.wait();
                     let thread_start = std::time::Instant::now();
-                    latch_clone.fetch().ok();
+                    latch_clone
+                        .switch_latch(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                            return Ok(10);
+                        })
+                        .ok();
                     thread_start.elapsed()
                 }));
             }

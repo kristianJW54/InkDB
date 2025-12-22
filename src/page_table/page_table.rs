@@ -12,7 +12,7 @@
 // invalidating concurrent readers or writers, and allows higher-level structures
 // (e.g. the B-tree) to remain correct under concurrent access.
 //
-// // Mapping Table
+// // Page Table
 //   ├─ owns latch + residency state
 //   ├─ points to frame
 //   │
@@ -20,7 +20,7 @@
 //   ├─ owns frames
 //   ├─ decides eviction
 //   │
-// Buffer Frame
+// Page Frame
 //   ├─ owns memory
 //   ├─ pin_count + dirty
 //   │
@@ -33,8 +33,8 @@
 // to be more memory efficient as well as making latches smaller and faster
 
 use crate::page::PageID;
+use crate::page_table::page_table_latch::PageTableLatch;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
 // For now we return a PageTableHandle because hash tables can move entries around so we need to be able to be sure where our entries are located and not give out references to them as they can move moved so
@@ -42,36 +42,32 @@ use std::sync::{Arc, RwLock};
 // In different implementations of a hash table we can optimize what we return
 // This way we can change PageTableHandle to whatever we want and keep the same API
 
-// For table entry we can use a small atomic state to allow threads to do double-checking for any misses and loading to disk - for this we can use a small enum,
-// along with CAS and Ordering
-// https://preshing.com/20130930/double-checked-locking-is-fixed-in-cpp11/
-
-pub(crate) const PT_IN_MEMORY: u8 = 0b000_0001;
-pub(crate) const PT_ON_DISK: u8 = 0b000_0010;
-pub(crate) const PT_LOADING: u8 = 0b000_0100;
-
-struct PageTableState(AtomicU8);
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageTableResult {
     Disk(u64),
-    Memory(usize),
+    Memory(u64),
 }
 
 pub(crate) struct PageTableEntry {
-    frame: PageTableResult,
-    state: PageTableState,
+    state: PageTableLatch<PageTableResult>,
 }
 
 impl PageTableEntry {
-    fn check_and_swap(&mut self, store: u8) {}
+    fn new(id: PageID) -> Self {
+        Self {
+            state: PageTableLatch::new(PageTableResult::Disk(id.to_offset())),
+        }
+    }
 }
 
 pub(crate) type PageTableHandle = Arc<PageTableEntry>;
 
 pub(crate) trait PageTable {
     fn get(&self, page_id: PageID) -> Option<PageTableHandle>; // We return a handle here so the buffer manager can load from disk and flip the state and change the frame address
-    fn insert(&self, page_id: PageID, entry: PageTableEntry);
+    fn insert(&self, page_id: PageID, entry: PageTableHandle);
 }
+
+// ---------- Naive Implementation ------------ //
 
 struct NaiveMappingTable {
     map: RwLock<HashMap<PageID, PageTableHandle>>,
@@ -89,37 +85,25 @@ impl PageTable for NaiveMappingTable {
     fn get(&self, page_id: PageID) -> Option<PageTableHandle> {
         self.map.read().unwrap().get(&page_id).cloned()
     }
-    fn insert(&self, page_id: PageID, entry: PageTableEntry) {
-        self.map.write().unwrap().insert(page_id, Arc::new(entry));
+    fn insert(&self, page_id: PageID, entry: PageTableHandle) {
+        self.map.write().unwrap().insert(page_id, entry);
     }
 }
 
 #[test]
-fn test_atomics() {
-    struct BufferManager {
-        table: Arc<dyn PageTable>,
+fn test_naive_map() {
+    let mut naive = NaiveMappingTable::new();
+
+    let entry1: PageTableHandle = Arc::new(PageTableEntry::new(PageID(1234)));
+    let entry2: PageTableHandle = Arc::new(PageTableEntry::new(PageID(5678)));
+
+    let (_, d) = entry1.state.peek();
+    match d {
+        PageTableResult::Disk(_) => {
+            println!("We are in disk state")
+        }
+        PageTableResult::Memory(_) => {
+            println!("We are in memory state")
+        }
     }
-
-    let mut bm = BufferManager {
-        table: Arc::new(NaiveMappingTable::new()),
-    };
-
-    let page_id = PageID(1234);
-
-    let entry = PageTableEntry {
-        frame: PageTableResult::Disk(page_id.into()),
-        state: PageTableState(AtomicU8::new(0)),
-    };
-
-    bm.table.insert(page_id, entry);
-
-    let handle = bm.table.get(page_id).unwrap();
-
-    match handle.frame {
-        PageTableResult::Disk(addr) => println!("Disk address: {}", addr),
-        PageTableResult::Memory(addr) => println!("Memory address: {}", addr),
-    }
-
-    // Now we need to have two threads access the entry and read it - both will see that it is disk and will need to load and change it
-    // only one can do so, the other will have to wait and read it again
 }

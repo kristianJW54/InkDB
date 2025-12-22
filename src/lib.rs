@@ -1,7 +1,6 @@
 mod buffer;
 mod index;
-mod latches;
-mod mapping;
 mod page;
+mod page_table;
 mod transaction;
 mod tree;
