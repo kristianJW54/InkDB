@@ -120,7 +120,7 @@ mod tests {
 
             let thread = thread::spawn(move || {
                 b.wait();
-                let first = n.read().unwrap().get(&entry_id_1).cloned().unwrap().clone();
+                let first = n.read().unwrap().get(&entry_id_1).unwrap().clone();
                 // Now we try to switch to on disk
                 if let Ok(result) = first.state.load(|data| {
                     std::thread::sleep(std::time::Duration::from_millis(30));
