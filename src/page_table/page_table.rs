@@ -67,16 +67,16 @@ pub(crate) trait PageTable {
     fn insert(&self, page_id: PageID, entry: PageTableHandle);
 }
 
-// ---------- Naive Implementation ------------ //
+// --------------- Naive Implementation ------------ //
 
 struct NaiveMappingTable {
-    map: RwLock<HashMap<PageID, PageTableHandle>>,
+    map: Arc<RwLock<HashMap<PageID, PageTableHandle>>>,
 }
 
 impl NaiveMappingTable {
     pub(crate) fn new() -> Self {
         NaiveMappingTable {
-            map: RwLock::new(HashMap::new()),
+            map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -90,20 +90,54 @@ impl PageTable for NaiveMappingTable {
     }
 }
 
-#[test]
-fn test_naive_map() {
-    let mut naive = NaiveMappingTable::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
-    let entry1: PageTableHandle = Arc::new(PageTableEntry::new(PageID(1234)));
-    let entry2: PageTableHandle = Arc::new(PageTableEntry::new(PageID(5678)));
+    #[test]
+    fn test_naive_map() {
+        let naive = NaiveMappingTable::new();
 
-    let (_, d) = entry1.state.peek();
-    match d {
-        PageTableResult::Disk(_) => {
-            println!("We are in disk state")
+        let entry_id_1 = PageID(1234);
+        let entry_id_2 = PageID(5678);
+
+        let entry1: PageTableHandle = Arc::new(PageTableEntry::new(entry_id_1));
+        let entry2: PageTableHandle = Arc::new(PageTableEntry::new(entry_id_2));
+
+        naive.insert(entry_id_1, entry1);
+        naive.insert(entry_id_2, entry2);
+
+        // Now we have loaded the entries which are on disk, we need to have threads try to access them
+
+        let thread_count = 10;
+        let mut handles = Vec::with_capacity(thread_count);
+        let barrier = Arc::new(Barrier::new(thread_count + 1));
+        for i in 0..thread_count {
+            let b = barrier.clone();
+            let n = naive.map.clone();
+
+            let thread = thread::spawn(move || {
+                b.wait();
+                let first = n.read().unwrap().get(&entry_id_1).cloned().unwrap().clone();
+                // Now we try to switch to on disk
+                if let Ok(result) = first.state.load(|data| {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    println!("Thread {} is loading with data {:?}", i, data);
+                    return Ok(PageTableResult::Memory(entry_id_1.into()));
+                }) {
+                    println!("Thread {} got final {:?}", i, result);
+                }
+            });
+
+            handles.push(thread);
         }
-        PageTableResult::Memory(_) => {
-            println!("We are in memory state")
+
+        barrier.wait();
+
+        for handle in handles {
+            let _ = handle.join();
         }
     }
 }

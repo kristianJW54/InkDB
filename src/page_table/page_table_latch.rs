@@ -53,10 +53,7 @@ impl<T: Clone> PageTableLatch<T> {
         (state, data)
     }
 
-    pub(super) fn switch_latch(
-        &self,
-        work: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
+    pub(super) fn load(&self, work: impl FnOnce(T) -> Result<T, String>) -> Result<T, String> {
         // We need to loop and use CAS for one loader many writers - first thread gets the load
 
         let mut spin_count = 0;
@@ -82,7 +79,7 @@ impl<T: Clone> PageTableLatch<T> {
                         Ordering::Acquire,
                     ) {
                         // Do work
-                        let loaded = work()?;
+                        let loaded = work(unsafe { &*self.data.get() }.clone())?;
                         // We now need to update the loaded data to self
                         //
                         // SAFETY: We are the only thread that can access this data due to the fact that we won the CAS and the state is now PT_LOADING
@@ -153,7 +150,7 @@ mod tests {
                     thread.wait();
                     let thread_start = std::time::Instant::now();
                     latch_clone
-                        .switch_latch(|| {
+                        .load(|_| {
                             std::thread::sleep(std::time::Duration::from_millis(30));
                             return Ok(10);
                         })
