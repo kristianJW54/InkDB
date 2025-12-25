@@ -86,15 +86,15 @@ impl<'page> IndexPageMut<'page> {
         Ok(())
     }
 
-    pub(crate) fn get_page_type(&self) -> PageType {
+    pub(crate) fn get_page_type(&mut self) -> PageType {
         PageType::from(self.page.get_page_type())
     }
 
-    pub(crate) fn kind(&self) -> PageKind {
+    pub(crate) fn kind(&mut self) -> PageKind {
         self.get_page_type().page_kind()
     }
 
-    pub(crate) fn level(&self) -> IndexLevel {
+    pub(crate) fn level(&mut self) -> IndexLevel {
         IndexLevel::from(self.get_page_type().page_sub_type())
     }
 
@@ -143,7 +143,7 @@ impl<'page> IndexPageMut<'page> {
 }
 
 pub(crate) struct IndexPageRef<'page> {
-    page: &'page SlottedPage,
+    page: SlottedPageRef<'page>,
 }
 
 impl Drop for IndexPageRef<'_> {
@@ -153,6 +153,10 @@ impl Drop for IndexPageRef<'_> {
 }
 
 impl<'page> IndexPageRef<'page> {
+    pub(crate) fn from_slotted_page(page: SlottedPageRef<'page>) -> Self {
+        Self { page }
+    }
+
     pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
         let mut high_key = false;
         if self.has_right_sibling() {

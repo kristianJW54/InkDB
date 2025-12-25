@@ -118,7 +118,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
-    pub(super) fn init_new(bytes: &'a mut RawPage) -> Self {
+    pub(crate) fn init_new(bytes: &'a mut RawPage) -> Self {
         let sp = SlottedPageMut::from_bytes(bytes);
 
         // Page type byte - we set as undefined because the page type wrapper that calls this should define this
@@ -135,26 +135,6 @@ impl<'a> SlottedPageMut<'a> {
 
         Self { bytes: sp.bytes }
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct SlottedPageRef<'a> {
-    bytes: &'a RawPage,
-}
-
-impl<'a> SlottedPageRef<'a> {
-    pub fn print_header(&self) {
-        println!("header = {:?}", &self.bytes[0..HEADER_SIZE]);
-    }
-
-    // -----------------------
-
-    // Header + Meta methods
-
-    #[inline(always)]
-    pub(crate) fn get_page_type(&self) -> u8 {
-        self.bytes[PAGE_TYPE_OFFSET]
-    }
 
     #[inline(always)]
     pub(crate) fn set_page_type(&mut self, page_type: u8) {
@@ -162,9 +142,22 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     #[inline(always)]
+    pub(crate) fn get_page_type(&mut self) -> u8 {
+        self.bytes[PAGE_TYPE_OFFSET]
+    }
+
+    #[inline(always)]
     fn free_start(&self) -> usize {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_START_OFFSET);
+            read_u16_le_unsafe(ptr) as usize
+        }
+    }
+
+    #[inline(always)]
+    fn free_end(&self) -> usize {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
             read_u16_le_unsafe(ptr) as usize
         }
     }
@@ -200,14 +193,6 @@ impl<'a> SlottedPageRef<'a> {
         Ok(new_fs)
     }
 
-    #[inline(always)]
-    fn free_end(&self) -> usize {
-        unsafe {
-            let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
-            read_u16_le_unsafe(ptr) as usize
-        }
-    }
-
     #[inline]
     pub(crate) fn set_free_end(&mut self, offset: u16) -> Result<()> {
         debug_assert!(offset >= HEADER_SIZE_U16);
@@ -222,18 +207,6 @@ impl<'a> SlottedPageRef<'a> {
         }
 
         Ok(())
-    }
-
-    #[inline(always)]
-    fn free_contiguous_space(&self) -> usize {
-        self.free_end() - self.free_start()
-    }
-
-    #[inline]
-    fn free_fragmented_space(&self) -> usize {
-        // NOTE: We must iterate slot entries and gather the length of entries which are deleted
-
-        0
     }
 
     #[inline(always)]
@@ -253,22 +226,9 @@ impl<'a> SlottedPageRef<'a> {
         }
     }
 
-    #[inline(always)]
-    pub(crate) fn get_flags(&self) -> u8 {
-        self.bytes[FLAGS_OFFSET]
-    }
-
     #[inline]
     pub(crate) fn set_flags(&mut self, flags: u8) {
         self.bytes[FLAGS_OFFSET] = flags;
-    }
-
-    #[inline(always)]
-    pub(crate) fn get_lsn(&self) -> u64 {
-        unsafe {
-            let b_ptr = self.bytes.as_ptr().add(LSN_OFFSET);
-            read_u64_le_unsafe(b_ptr)
-        }
     }
 
     #[inline(always)]
@@ -278,8 +238,6 @@ impl<'a> SlottedPageRef<'a> {
             write_u64_le_unsafe(b_ptr, lsn);
         }
     }
-
-    // Slot Dir Methods
 
     pub(crate) fn slot_dir_ref(&self) -> SlotRef<'_> {
         let fs = self.free_start();
@@ -368,70 +326,15 @@ impl<'a> SlottedPageRef<'a> {
         }
     }
 
-    // Cell Methods
-
-    //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(crate) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
-        // We want to return raw bytes here because we are not concerned with how they are interpreted
-        // it is up to the type layers who request the bytes to parse and process.
-
-        let slot_dir = self.slot_dir_ref();
-        let slot_count = slot_dir.slot_count();
-        if slot_count == 0 {
-            return Err(PageError::EmptySlotDir);
+    pub(crate) fn get_special_ref(&self) -> Result<&'_ [u8]> {
+        let s_offset = self.get_special_offset() as usize;
+        if s_offset == 0 {
+            return Err(PageError::SpecialOffsetIsZero);
         }
+        let size = PAGE_SIZE - s_offset;
+        assert!(size <= PAGE_SIZE);
 
-        let idx = slot_id.0 as usize;
-
-        if idx >= slot_count {
-            return Err(PageError::SlotIDOutOfBounds);
-        }
-
-        let index_offset = idx * ENTRY_SIZE;
-
-        // TODO Add safety notes and also debug asserts
-
-        unsafe {
-            let base = slot_dir.ptr.add(index_offset);
-
-            let offset = read_u16_le_unsafe(base) as usize;
-            let length = read_u16_le_unsafe(base.add(2)) as usize;
-
-            let end = offset + length;
-
-            if end > PAGE_SIZE {
-                return Err(PageError::CorruptCell);
-            }
-
-            return Ok(self.bytes[offset..end].as_ref());
-        }
-    }
-
-    pub(crate) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
-        // We have a valid slot entry. The only way we would be able to get this is if there also exists a valid
-        // cell area
-
-        let offset = se.offset as usize;
-        let length = se.length as usize;
-
-        debug_assert!(offset + length < PAGE_SIZE);
-
-        let cell = self.bytes[offset..offset + length].as_ref();
-        cell
-    }
-
-    // Operator Methods
-
-    // Special Section Methods
-
-    #[inline(always)]
-    fn special_size(&self) -> usize {
-        let offset = self.get_special_offset() as usize;
-        if offset == 0 {
-            return 0;
-        }
-        debug_assert!(offset <= PAGE_SIZE);
-        PAGE_SIZE - offset
+        Ok(&self.bytes[s_offset..s_offset + size])
     }
 
     pub(crate) fn get_special_mut(&mut self) -> Result<&'_ mut [u8]> {
@@ -444,19 +347,6 @@ impl<'a> SlottedPageRef<'a> {
 
         Ok(&mut self.bytes[s_offset..s_offset + size])
     }
-
-    pub(crate) fn get_special_ref(&self) -> Result<&'_ [u8]> {
-        let s_offset = self.get_special_offset() as usize;
-        if s_offset == 0 {
-            return Err(PageError::SpecialOffsetIsZero);
-        }
-        let size = PAGE_SIZE - s_offset;
-        assert!(size <= PAGE_SIZE);
-
-        Ok(&self.bytes[s_offset..s_offset + size])
-    }
-
-    // Cell area methods
 
     pub(crate) fn add_cell_append_slot_entry(&mut self, cell: &[u8]) -> Result<()> {
         // Check we have enough free space?
@@ -523,6 +413,220 @@ impl<'a> SlottedPageRef<'a> {
 
         Ok(())
     }
+
+    //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
+    pub(crate) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
+        // We want to return raw bytes here because we are not concerned with how they are interpreted
+        // it is up to the type layers who request the bytes to parse and process.
+
+        let slot_dir = self.slot_dir_ref();
+        let slot_count = slot_dir.slot_count();
+        if slot_count == 0 {
+            return Err(PageError::EmptySlotDir);
+        }
+
+        let idx = slot_id.0 as usize;
+
+        if idx >= slot_count {
+            return Err(PageError::SlotIDOutOfBounds);
+        }
+
+        let index_offset = idx * ENTRY_SIZE;
+
+        // TODO Add safety notes and also debug asserts
+
+        unsafe {
+            let base = slot_dir.ptr.add(index_offset);
+
+            let offset = read_u16_le_unsafe(base) as usize;
+            let length = read_u16_le_unsafe(base.add(2)) as usize;
+
+            let end = offset + length;
+
+            if end > PAGE_SIZE {
+                return Err(PageError::CorruptCell);
+            }
+
+            return Ok(self.bytes[offset..end].as_ref());
+        }
+    }
+
+    pub(crate) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
+        // We have a valid slot entry. The only way we would be able to get this is if there also exists a valid
+        // cell area
+
+        let offset = se.offset as usize;
+        let length = se.length as usize;
+
+        debug_assert!(offset + length < PAGE_SIZE);
+
+        let cell = self.bytes[offset..offset + length].as_ref();
+        cell
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct SlottedPageRef<'a> {
+    bytes: &'a RawPage,
+}
+
+impl<'a> SlottedPageRef<'a> {
+    pub fn print_header(&self) {
+        println!("header = {:?}", &self.bytes[0..HEADER_SIZE]);
+    }
+
+    pub(crate) fn from_bytes(bytes: &'a RawPage) -> Self {
+        Self { bytes }
+    }
+
+    // -----------------------
+
+    // Header + Meta methods
+
+    #[inline(always)]
+    pub(crate) fn get_page_type(&self) -> u8 {
+        self.bytes[PAGE_TYPE_OFFSET]
+    }
+
+    #[inline(always)]
+    fn free_start(&self) -> usize {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(FREE_START_OFFSET);
+            read_u16_le_unsafe(ptr) as usize
+        }
+    }
+
+    #[inline(always)]
+    fn free_end(&self) -> usize {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
+            read_u16_le_unsafe(ptr) as usize
+        }
+    }
+
+    #[inline(always)]
+    fn free_contiguous_space(&self) -> usize {
+        self.free_end() - self.free_start()
+    }
+
+    #[inline]
+    fn free_fragmented_space(&self) -> usize {
+        // NOTE: We must iterate slot entries and gather the length of entries which are deleted
+
+        0
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_special_offset(&self) -> u16 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(SPECIAL_OFFSET);
+            read_u16_le_unsafe(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_flags(&self) -> u8 {
+        self.bytes[FLAGS_OFFSET]
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_lsn(&self) -> u64 {
+        unsafe {
+            let b_ptr = self.bytes.as_ptr().add(LSN_OFFSET);
+            read_u64_le_unsafe(b_ptr)
+        }
+    }
+
+    // Slot Dir Methods
+
+    pub(crate) fn slot_dir_ref(&self) -> SlotRef<'_> {
+        let fs = self.free_start();
+        assert!(fs >= HEADER_SIZE);
+        //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
+        // page which indexing into the bytes of the page returning the offset which is correct and in bounds
+        let sd_ptr = unsafe { self.bytes.as_ptr().add(HEADER_SIZE) };
+
+        SlotRef::new(sd_ptr, fs - HEADER_SIZE)
+    }
+
+    // Cell Methods
+
+    //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
+    pub(crate) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
+        // We want to return raw bytes here because we are not concerned with how they are interpreted
+        // it is up to the type layers who request the bytes to parse and process.
+
+        let slot_dir = self.slot_dir_ref();
+        let slot_count = slot_dir.slot_count();
+        if slot_count == 0 {
+            return Err(PageError::EmptySlotDir);
+        }
+
+        let idx = slot_id.0 as usize;
+
+        if idx >= slot_count {
+            return Err(PageError::SlotIDOutOfBounds);
+        }
+
+        let index_offset = idx * ENTRY_SIZE;
+
+        // TODO Add safety notes and also debug asserts
+
+        unsafe {
+            let base = slot_dir.ptr.add(index_offset);
+
+            let offset = read_u16_le_unsafe(base) as usize;
+            let length = read_u16_le_unsafe(base.add(2)) as usize;
+
+            let end = offset + length;
+
+            if end > PAGE_SIZE {
+                return Err(PageError::CorruptCell);
+            }
+
+            return Ok(self.bytes[offset..end].as_ref());
+        }
+    }
+
+    pub(crate) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
+        // We have a valid slot entry. The only way we would be able to get this is if there also exists a valid
+        // cell area
+
+        let offset = se.offset as usize;
+        let length = se.length as usize;
+
+        debug_assert!(offset + length < PAGE_SIZE);
+
+        let cell = self.bytes[offset..offset + length].as_ref();
+        cell
+    }
+
+    // Operator Methods
+
+    // Special Section Methods
+
+    #[inline(always)]
+    fn special_size(&self) -> usize {
+        let offset = self.get_special_offset() as usize;
+        if offset == 0 {
+            return 0;
+        }
+        debug_assert!(offset <= PAGE_SIZE);
+        PAGE_SIZE - offset
+    }
+
+    pub(crate) fn get_special_ref(&self) -> Result<&'_ [u8]> {
+        let s_offset = self.get_special_offset() as usize;
+        if s_offset == 0 {
+            return Err(PageError::SpecialOffsetIsZero);
+        }
+        let size = PAGE_SIZE - s_offset;
+        assert!(size <= PAGE_SIZE);
+
+        Ok(&self.bytes[s_offset..s_offset + size])
+    }
+
+    // Cell area methods
 }
 
 // Slot Array
@@ -632,44 +736,35 @@ mod tests {
     use std::{mem, process};
 
     #[test]
-    fn page_type() {
-        let page = SlottedPage::default();
-        assert_eq!(page.get_page_type(), 0);
-    }
-
-    #[test]
     fn slot_dir() {
-        let mut page = SlottedPage::default();
-
-        let sd = page.slot_dir_ref();
-
-        println!("slot dir size = {}", sd.size);
+        let mut raw_page: RawPage = [0u8; 4096];
+        // We need a mutable view here to initialize the page
+        let mut page = SlottedPageMut::init_new(&mut raw_page);
 
         page.append_slot_entry(100, 12).unwrap();
         page.append_slot_entry(200, 21).unwrap();
         page.append_slot_entry(300, 22).unwrap();
 
-        for i in page.slot_dir_ref().iter() {
+        drop(page);
+        // Now we need a ref view
+        let ref_page = SlottedPageRef::from_bytes(&raw_page);
+        let sd = ref_page.slot_dir_ref();
+
+        for i in sd.iter() {
             println!("{:?}", i);
         }
 
-        let result = page.cell_slice_from_id(SlotID(0)).unwrap();
+        let result = ref_page.cell_slice_from_id(SlotID(0)).unwrap();
         println!("result -> {:?}", result.len());
 
         // TODO Continue test
     }
 
-    #[should_panic]
-    #[test]
-    fn get_cell_error() {
-        let page = SlottedPage::default();
-        page.cell_slice_from_id(SlotID(0))
-            .unwrap_or_else(|e| panic!("{}", e));
-    }
-
     #[test]
     fn check_undefined_special() {
-        let mut page = SlottedPage::default();
+        let mut raw_page: RawPage = [0u8; 4096];
+        // We need a mutable view here to initialize the page
+        let mut page = SlottedPageMut::init_new(&mut raw_page);
         // Should error here
         match page.get_special_mut() {
             Ok(_) => panic!("Expected an error for undefined special area"),
@@ -679,7 +774,9 @@ mod tests {
 
     #[test]
     fn check_insert_entry_at_index() {
-        let mut page = SlottedPage::default();
+        let mut raw_page: RawPage = [0u8; 4096];
+        // We need a mutable view here to initialize the page
+        let mut page = SlottedPageMut::init_new(&mut raw_page);
         page.insert_slot_entry_at_index(
             0,
             SlotEntry {
@@ -717,7 +814,9 @@ mod tests {
 
     #[test]
     fn adding_cell_append() {
-        let mut page = SlottedPage::default();
+        let mut raw_page: RawPage = [0u8; 4096];
+        // We need a mutable view here to initialize the page
+        let mut page = SlottedPageMut::init_new(&mut raw_page);
 
         let cell = "I am a cell".as_bytes();
 
