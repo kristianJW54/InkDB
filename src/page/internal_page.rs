@@ -4,7 +4,8 @@
 
 // Page types interpret over the slotted page for their type
 use crate::page::{
-    self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage, read_u16_le_unsafe,
+    self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
+    read_u16_le_unsafe,
 };
 use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
 use page::IndexLevel;
@@ -57,7 +58,7 @@ impl Deref for IndexCellOwned {
 }
 
 pub(crate) struct IndexPageMut<'page> {
-    page: &'page mut SlottedPage,
+    page: SlottedPageMut<'page>,
 }
 
 impl<'page> IndexPageMut<'page> {

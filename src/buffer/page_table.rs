@@ -32,10 +32,17 @@
 // Future implementations can be sharded hash table which will still implement the PageTable trait. Further to this, we can optimize page handle structures
 // to be more memory efficient as well as making latches smaller and faster
 
+use crate::buffer::page_table_latch::PageTableLatch;
 use crate::page::PageID;
-use crate::page_table::page_table_latch::PageTableLatch;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+
+// ---------- PageTable Trait ----------//
+
+pub(crate) trait PageTable {
+    fn get(&self, page_id: PageID) -> Option<PageTableHandle>; // We return a handle here so the buffer manager can load from disk and flip the state and change the frame address
+    fn insert(&self, page_id: PageID, entry: PageTableHandle);
+}
 
 // For now we return a PageTableHandle because hash tables can move entries around so we need to be able to be sure where our entries are located and not give out references to them as they can move moved so
 // that would leave dangling references.
@@ -61,11 +68,6 @@ impl PageTableEntry {
 }
 
 pub(crate) type PageTableHandle = Arc<PageTableEntry>;
-
-pub(crate) trait PageTable {
-    fn get(&self, page_id: PageID) -> Option<PageTableHandle>; // We return a handle here so the buffer manager can load from disk and flip the state and change the frame address
-    fn insert(&self, page_id: PageID, entry: PageTableHandle);
-}
 
 // --------------- Naive Implementation ------------ //
 

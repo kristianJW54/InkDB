@@ -2,7 +2,9 @@ use std::ptr;
 pub mod internal_page;
 pub mod leaf;
 mod raw_page;
-pub(crate) use raw_page::{ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPage};
+pub(crate) use raw_page::{
+    ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
+};
 
 pub(crate) type RawPage = [u8; 4096];
 
@@ -108,6 +110,18 @@ impl PageKind {
             PT_FREE => PageKind::Free,
             _ => return None,
         })
+    }
+
+    pub(crate) fn uses_slotted_page_layout(&self) -> bool {
+        match self {
+            PageKind::Heap => false,
+            PageKind::IndexInternal => true,
+            PageKind::IndexMiniLeaf => true,
+            PageKind::IndexLeaf => true,
+            PageKind::Meta => false,
+            PageKind::Free => false,
+            PageKind::Undefined => false,
+        }
     }
 }
 

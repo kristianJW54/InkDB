@@ -27,15 +27,10 @@ pub trait PageCache {
     fn get(self, page_id: PageID, f: &mut dyn FnMut(&[u8]));
     fn put(&self, page: ()) -> Result<()>;
     fn remove(&self, page_id: PageID) -> Result<()>;
-    fn allocate(&self, page_id: PageID, kind: PageKind) -> Result<()>;
 }
 
 pub struct BaseFileCache {
     pub cache: Mutex<HashMap<PageID, Arc<()>>>,
-    // Need a transaction table
-    // Need a free list
-    // Need a next pageID
-    // A next TransactionID?
 }
 
 impl BaseFileCache {

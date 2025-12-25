@@ -49,6 +49,6 @@ impl<'blink> BInner<'blink> {
     }
 }
 
-// Need to have insertpath structure for paths
-// Need to have leafpos
-// Need to have cursor/scan
+// Need to have insertpath structure for paths - which we can pass to a traverse_with_path?
+// Need to have leafpos - basically slot entry for the leaf page?
+// Need to have cursor/scan - for horizontal movement?

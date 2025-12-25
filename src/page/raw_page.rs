@@ -104,62 +104,50 @@ impl Display for PageError {
 }
 
 #[derive(Debug)]
-pub(crate) struct SlottedPage {
-    bytes: RawPage,
+pub(crate) struct SlottedPageMut<'a> {
+    bytes: &'a mut RawPage,
 }
 
-impl Deref for SlottedPage {
-    type Target = RawPage;
-    fn deref(&self) -> &Self::Target {
-        &self.bytes
+impl<'a> SlottedPageMut<'a> {
+    pub(crate) fn from_bytes(bytes: &'a mut RawPage) -> Self {
+        Self { bytes: bytes }
+    }
+
+    pub(crate) fn wipe_page(&mut self) {
+        self.bytes.fill(0);
+    }
+
+    //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
+    pub(super) fn init_new(bytes: &'a mut RawPage) -> Self {
+        let sp = SlottedPageMut::from_bytes(bytes);
+
+        // Page type byte - we set as undefined because the page type wrapper that calls this should define this
+        // If slotted page is initialised and is undefined then it is an invalid page and cannot be operated on
+        sp.bytes[PAGE_TYPE_OFFSET] = PageKind::Undefined as u8;
+
+        // free_start -> slot_dir starts immediately after header
+        sp.bytes[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE]
+            .copy_from_slice(&HEADER_SIZE_U16.to_le_bytes());
+
+        // free_end -> by default = PAGE_SIZE, overwritten later by wrappers
+        sp.bytes[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE]
+            .copy_from_slice(&(PAGE_SIZE as u16).to_le_bytes());
+
+        Self { bytes: sp.bytes }
     }
 }
 
-impl DerefMut for SlottedPage {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.bytes
-    }
+#[derive(Debug)]
+pub(crate) struct SlottedPageRef<'a> {
+    bytes: &'a RawPage,
 }
 
-impl Default for SlottedPage {
-    fn default() -> Self {
-        SlottedPage::new_blank()
-    }
-}
-
-impl SlottedPage {
-    pub fn mutate_first_byte(&mut self) {
-        self.bytes[0] = 1
-    }
-
+impl<'a> SlottedPageRef<'a> {
     pub fn print_header(&self) {
         println!("header = {:?}", &self.bytes[0..HEADER_SIZE]);
     }
 
     // -----------------------
-
-    pub(crate) fn wipe_page(&mut self) {
-        self.bytes = [0u8; PAGE_SIZE];
-    }
-
-    //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
-    pub fn new_blank() -> Self {
-        let mut buff = [0u8; PAGE_SIZE];
-
-        // Page type byte - we set as undefined because the page type wrapper that calls this should define this
-        // If slotted page is initialised and is undefined then it is an invalid page and cannot be operated on
-        buff[PAGE_TYPE_OFFSET] = PageKind::Undefined as u8;
-
-        // free_start -> slot_dir starts immediately after header
-        buff[FREE_START_OFFSET..FREE_START_OFFSET + FREE_START_SIZE]
-            .copy_from_slice(&HEADER_SIZE_U16.to_le_bytes());
-
-        // free_end -> by default = PAGE_SIZE, overwritten later by wrappers
-        buff[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE]
-            .copy_from_slice(&(PAGE_SIZE as u16).to_le_bytes());
-
-        Self { bytes: buff }
-    }
 
     // Header + Meta methods
 
