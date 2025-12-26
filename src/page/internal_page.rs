@@ -82,7 +82,7 @@ impl<'page> IndexPageMut<'page> {
 
         // Adjust free_end for special offset
         self.page
-            .set_free_end(PAGE_SIZE as u16 - INDEX_SPECIAL_SIZE)?;
+            .set_free_end(PAGE_SIZE - INDEX_SPECIAL_SIZE as usize)?;
 
         // Set lsn
         self.page.set_lsn(lsn);

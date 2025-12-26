@@ -17,6 +17,10 @@ use crate::transaction::tx_memory::TxMemory;
     - Repair incomplete splits (sometimes lazily)
 */
 
+// NOTES:
+// B-tree owns the split logic: Calls into page specific layer to handle keys etc which in turn calls into slotted_page to get bytes and size etc
+// Need a SplitStrategy struct? separate file within this folder?
+
 pub(super) type Result<T> = std::result::Result<T, BTreeInnerError>;
 
 pub(super) enum BTreeInnerError {

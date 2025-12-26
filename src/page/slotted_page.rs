@@ -1,4 +1,6 @@
 // NOTE: The raw slotted page
+// Privacy should be mostly super as we only want the page interpreted layers to interact with the slotted_page. This enforces the need for the slotted page to be
+// wrapped and does not allow the page to be exposed outside of any page specific wrappers or if it is, we won't be able to do anything with it anyway.
 
 use crate::page::*;
 use std::fmt::{Display, Formatter};
@@ -65,42 +67,8 @@ pub(crate) enum PageError {
     SlotIndexNotInRange,
     NoContigiousSpace,
     NotEnoughFreeSpace,
-    InvalidFreeEnd(u16),
-    InvalidFreeStart(u16),
-}
-
-impl Display for PageError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PageError::EmptySlotDir => {
-                write!(f, "Empty slot dir")
-            }
-            PageError::SlotIDOutOfBounds => {
-                write!(f, "SlotID out of bounds")
-            }
-            PageError::CorruptCell => {
-                write!(f, "Corrupt cell")
-            }
-            PageError::SpecialOffsetIsZero => {
-                write!(f, "Special offset is zero")
-            }
-            PageError::SlotIndexNotInRange => {
-                write!(f, "SlotIndex is not in range")
-            }
-            PageError::NoContigiousSpace => {
-                write!(f, "No contigious space")
-            }
-            PageError::NotEnoughFreeSpace => {
-                write!(f, "Not enough free space")
-            }
-            PageError::InvalidFreeEnd(offset) => {
-                write!(f, "Invalid free end offset: {}", offset)
-            }
-            PageError::InvalidFreeStart(offset) => {
-                write!(f, "Invalid free start offset: {}", offset)
-            }
-        }
-    }
+    InvalidFreeEnd,
+    InvalidFreeStart,
 }
 
 #[derive(Debug)]
@@ -118,8 +86,8 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     //NOTE: The new method needs to take parameters from the allocator like lsn, checksum etc
-    pub(crate) fn init_new(bytes: &'a mut RawPage) -> Self {
-        let sp = SlottedPageMut::from_bytes(bytes);
+    pub(crate) fn init_new(bytes: &'a mut RawPage, page_type: u8) -> Self {
+        let mut sp = SlottedPageMut::from_bytes(bytes);
 
         // Page type byte - we set as undefined because the page type wrapper that calls this should define this
         // If slotted page is initialised and is undefined then it is an invalid page and cannot be operated on
@@ -133,21 +101,43 @@ impl<'a> SlottedPageMut<'a> {
         sp.bytes[FREE_END_OFFSET..FREE_END_OFFSET + FREE_END_SIZE]
             .copy_from_slice(&(PAGE_SIZE as u16).to_le_bytes());
 
+        // We should also be wrapped or be called by an interpreted layer so we set page_type from what we are passed
+        sp.set_page_type(page_type);
+
         Self { bytes: sp.bytes }
     }
 
     #[inline(always)]
-    pub(crate) fn set_page_type(&mut self, page_type: u8) {
+    pub(super) fn set_page_type(&mut self, page_type: u8) {
         self.bytes[PAGE_TYPE_OFFSET] = page_type;
     }
 
     #[inline(always)]
-    pub(crate) fn get_page_type(&self) -> u8 {
+    pub(super) fn get_page_type(&self) -> u8 {
         self.bytes[PAGE_TYPE_OFFSET]
     }
 
     #[inline(always)]
-    fn free_start(&self) -> usize {
+    pub(super) fn free_contiguous_space(&self) -> usize {
+        self.free_end() - self.free_start()
+    }
+
+    #[inline]
+    pub(super) fn free_fragmented_space(&self) -> usize {
+        // NOTE: We must iterate slot entries and gather the length of entries which are deleted
+
+        0
+    }
+
+    #[inline]
+    pub(super) fn memory_used(&self) -> usize {
+        // TODO Finish
+        // Need to take free space and then minus that from the total free space (free_start - 4096(including if special offset))
+        // Then test against iterating through and manually counting
+    }
+
+    #[inline(always)]
+    pub(super) fn free_start(&self) -> usize {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_START_OFFSET);
             read_u16_le_unsafe(ptr) as usize
@@ -155,7 +145,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    fn free_end(&self) -> usize {
+    pub(super) fn free_end(&self) -> usize {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
             read_u16_le_unsafe(ptr) as usize
@@ -163,7 +153,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn set_free_start(&mut self, offset: usize) {
+    pub(super) fn set_free_start(&mut self, offset: usize) {
         debug_assert!(offset >= HEADER_SIZE);
         debug_assert!(offset <= PAGE_SIZE);
 
@@ -174,7 +164,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    fn increment_free_start(&mut self, bytes: usize) -> Result<usize> {
+    pub(super) fn increment_free_start(&mut self, bytes: usize) -> Result<usize> {
         let cur_fs = self.free_start();
         let new_fs = cur_fs + bytes;
 
@@ -182,7 +172,7 @@ impl<'a> SlottedPageMut<'a> {
         debug_assert!(new_fs >= HEADER_SIZE);
 
         if new_fs < HEADER_SIZE {
-            return Err(PageError::InvalidFreeStart(bytes as u16));
+            return Err(PageError::InvalidFreeStart);
         }
 
         unsafe {
@@ -194,23 +184,23 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(crate) fn set_free_end(&mut self, offset: u16) -> Result<()> {
-        debug_assert!(offset >= HEADER_SIZE_U16);
+    pub(super) fn set_free_end(&mut self, offset: usize) -> Result<()> {
+        debug_assert!(offset >= HEADER_SIZE);
 
-        if offset < self.free_start() as u16 || offset < HEADER_SIZE_U16 {
-            return Err(PageError::InvalidFreeEnd(offset));
+        if offset < self.free_start() || offset < HEADER_SIZE {
+            return Err(PageError::InvalidFreeEnd);
         }
 
         unsafe {
             let page_ptr = self.bytes.as_mut_ptr().add(FREE_END_OFFSET);
-            write_u16_le_unsafe(page_ptr, offset);
+            write_u16_le_unsafe(page_ptr, offset as u16);
         }
 
         Ok(())
     }
 
     #[inline(always)]
-    pub(crate) fn get_special_offset(&self) -> u16 {
+    pub(super) fn get_special_offset(&self) -> u16 {
         unsafe {
             let ptr = self.bytes.as_ptr().add(SPECIAL_OFFSET);
             read_u16_le_unsafe(ptr)
@@ -218,7 +208,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn set_special_offset(&mut self, special: u16) {
+    pub(super) fn set_special_offset(&mut self, special: u16) {
         assert!(special < PAGE_SIZE_U16);
         let offset = PAGE_SIZE_U16 - special;
         unsafe {
@@ -227,19 +217,19 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(crate) fn set_flags(&mut self, flags: u8) {
+    pub(super) fn set_flags(&mut self, flags: u8) {
         self.bytes[FLAGS_OFFSET] = flags;
     }
 
     #[inline(always)]
-    pub(crate) fn set_lsn(&mut self, lsn: u64) {
+    pub(super) fn set_lsn(&mut self, lsn: u64) {
         unsafe {
             let b_ptr = self.bytes.as_mut_ptr().add(LSN_OFFSET);
             write_u64_le_unsafe(b_ptr, lsn);
         }
     }
 
-    pub(crate) fn slot_dir_ref(&self) -> SlotRef<'_> {
+    pub(super) fn slot_dir_ref(&self) -> SlotRef<'_> {
         let fs = self.free_start();
         assert!(fs >= HEADER_SIZE);
         //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
@@ -252,7 +242,7 @@ impl<'a> SlottedPageMut<'a> {
     //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
     // to insert a slot_entry
     //NOTE: Do we need to pass in u16 or if this is called after inserting row data can we pass in ptr?
-    fn append_slot_entry(&mut self, size: u16, offset: u16) -> Result<()> {
+    pub(super) fn append_slot_entry(&mut self, size: u16, offset: u16) -> Result<()> {
         let fs = self.free_start();
         let end = self.free_end();
 
@@ -278,7 +268,11 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     // TODO insert_slot_entry_at_index() method
-    fn insert_slot_entry_at_index(&mut self, idx: usize, entry: SlotEntry) -> Result<()> {
+    pub(super) fn insert_slot_entry_at_index(
+        &mut self,
+        idx: usize,
+        entry: SlotEntry,
+    ) -> Result<()> {
         // we need to first allocate a slot entry size at the start of free space and get the number of slots
         // then we take the slot entries and shift them along by slot_entry_size[4]
         // finally we need to add the slot entry to the start of the slot_dir at HEADER_SIZE
@@ -326,7 +320,7 @@ impl<'a> SlottedPageMut<'a> {
         }
     }
 
-    pub(crate) fn get_special_ref(&self) -> Result<&'_ [u8]> {
+    pub(super) fn get_special_ref(&self) -> Result<&'_ [u8]> {
         let s_offset = self.get_special_offset() as usize;
         if s_offset == 0 {
             return Err(PageError::SpecialOffsetIsZero);
@@ -337,7 +331,7 @@ impl<'a> SlottedPageMut<'a> {
         Ok(&self.bytes[s_offset..s_offset + size])
     }
 
-    pub(crate) fn get_special_mut(&mut self) -> Result<&'_ mut [u8]> {
+    pub(super) fn get_special_mut(&mut self) -> Result<&'_ mut [u8]> {
         let s_offset = self.get_special_offset() as usize;
         if s_offset == 0 {
             return Err(PageError::SpecialOffsetIsZero);
@@ -348,7 +342,7 @@ impl<'a> SlottedPageMut<'a> {
         Ok(&mut self.bytes[s_offset..s_offset + size])
     }
 
-    pub(crate) fn add_cell_append_slot_entry(&mut self, cell: &[u8]) -> Result<()> {
+    pub(super) fn add_cell_append_slot_entry(&mut self, cell: &[u8]) -> Result<()> {
         // Check we have enough free space?
         // We talk only to contigious space here because we can return Err(PageError::NoContigiousSpace)
         // And allow the caller to call back into the raw page methods to either compact or split the page
@@ -375,12 +369,12 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         // After successful insertion we need to update free_end
-        self.set_free_end(cell_start_offset as u16)?;
+        self.set_free_end(cell_start_offset)?;
 
         Ok(())
     }
 
-    pub(crate) fn add_cell_at_slot_entry_index(&mut self, index: usize, cell: &[u8]) -> Result<()> {
+    pub(super) fn add_cell_at_slot_entry_index(&mut self, index: usize, cell: &[u8]) -> Result<()> {
         // We check free contigious space and return Error if there is no space for the caller to handle
 
         let free_start = self.free_start();
@@ -409,13 +403,13 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         // IMPORTANT! Need to ensure we update free_end to reflect the change in page memory and free_space
-        self.set_free_end(cell_start_offset as u16)?;
+        self.set_free_end(cell_start_offset)?;
 
         Ok(())
     }
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(crate) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -451,7 +445,7 @@ impl<'a> SlottedPageMut<'a> {
         }
     }
 
-    pub(crate) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
+    pub(super) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
         // We have a valid slot entry. The only way we would be able to get this is if there also exists a valid
         // cell area
 
@@ -471,10 +465,6 @@ pub(crate) struct SlottedPageRef<'a> {
 }
 
 impl<'a> SlottedPageRef<'a> {
-    pub fn print_header(&self) {
-        println!("header = {:?}", &self.bytes[0..HEADER_SIZE]);
-    }
-
     pub(crate) fn from_bytes(bytes: &'a RawPage) -> Self {
         Self { bytes }
     }
@@ -484,12 +474,12 @@ impl<'a> SlottedPageRef<'a> {
     // Header + Meta methods
 
     #[inline(always)]
-    pub(crate) fn get_page_type(&self) -> u8 {
+    pub(super) fn get_page_type(&self) -> u8 {
         self.bytes[PAGE_TYPE_OFFSET]
     }
 
     #[inline(always)]
-    fn free_start(&self) -> usize {
+    pub(super) fn free_start(&self) -> usize {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_START_OFFSET);
             read_u16_le_unsafe(ptr) as usize
@@ -497,7 +487,7 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     #[inline(always)]
-    fn free_end(&self) -> usize {
+    pub(super) fn free_end(&self) -> usize {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
             read_u16_le_unsafe(ptr) as usize
@@ -505,19 +495,19 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     #[inline(always)]
-    fn free_contiguous_space(&self) -> usize {
+    pub(super) fn free_contiguous_space(&self) -> usize {
         self.free_end() - self.free_start()
     }
 
     #[inline]
-    fn free_fragmented_space(&self) -> usize {
+    pub(super) fn free_fragmented_space(&self) -> usize {
         // NOTE: We must iterate slot entries and gather the length of entries which are deleted
 
         0
     }
 
     #[inline(always)]
-    pub(crate) fn get_special_offset(&self) -> u16 {
+    pub(super) fn get_special_offset(&self) -> u16 {
         unsafe {
             let ptr = self.bytes.as_ptr().add(SPECIAL_OFFSET);
             read_u16_le_unsafe(ptr)
@@ -525,12 +515,12 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn get_flags(&self) -> u8 {
+    pub(super) fn get_flags(&self) -> u8 {
         self.bytes[FLAGS_OFFSET]
     }
 
     #[inline(always)]
-    pub(crate) fn get_lsn(&self) -> u64 {
+    pub(super) fn get_lsn(&self) -> u64 {
         unsafe {
             let b_ptr = self.bytes.as_ptr().add(LSN_OFFSET);
             read_u64_le_unsafe(b_ptr)
@@ -539,7 +529,7 @@ impl<'a> SlottedPageRef<'a> {
 
     // Slot Dir Methods
 
-    pub(crate) fn slot_dir_ref(&self) -> SlotRef<'_> {
+    pub(super) fn slot_dir_ref(&self) -> SlotRef<'_> {
         let fs = self.free_start();
         assert!(fs >= HEADER_SIZE);
         //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
@@ -552,7 +542,7 @@ impl<'a> SlottedPageRef<'a> {
     // Cell Methods
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(crate) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -588,7 +578,7 @@ impl<'a> SlottedPageRef<'a> {
         }
     }
 
-    pub(crate) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
+    pub(super) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
         // We have a valid slot entry. The only way we would be able to get this is if there also exists a valid
         // cell area
 
@@ -606,7 +596,7 @@ impl<'a> SlottedPageRef<'a> {
     // Special Section Methods
 
     #[inline(always)]
-    fn special_size(&self) -> usize {
+    pub(super) fn special_size(&self) -> usize {
         let offset = self.get_special_offset() as usize;
         if offset == 0 {
             return 0;
@@ -615,7 +605,7 @@ impl<'a> SlottedPageRef<'a> {
         PAGE_SIZE - offset
     }
 
-    pub(crate) fn get_special_ref(&self) -> Result<&'_ [u8]> {
+    pub(super) fn get_special_ref(&self) -> Result<&'_ [u8]> {
         let s_offset = self.get_special_offset() as usize;
         if s_offset == 0 {
             return Err(PageError::SpecialOffsetIsZero);
@@ -632,7 +622,7 @@ impl<'a> SlottedPageRef<'a> {
 // Slot Array
 
 #[derive(Debug)]
-pub struct SlotRef<'a> {
+pub(super) struct SlotRef<'a> {
     ptr: *const u8, // Ptr to the start of the slot_dir
     size: usize,
     _marker: PhantomData<&'a u8>, // For lifetime
@@ -642,7 +632,7 @@ pub struct SlotRef<'a> {
 
 impl<'a> SlotRef<'a> {
     // This isn't unsafe yet because we are only storing a raw const pointer and not aliasing or dereferencing
-    fn new(start: *const u8, size: usize) -> Self {
+    pub(super) fn new(start: *const u8, size: usize) -> Self {
         Self {
             ptr: start,
             size,
@@ -650,19 +640,19 @@ impl<'a> SlotRef<'a> {
         }
     }
 
-    pub fn slot_count(&self) -> usize {
+    pub(super) fn slot_count(&self) -> usize {
         if self.size == 0 {
             return 0;
         }
         self.size / size_of::<SlotEntry>()
     }
 
-    pub fn iter(&self) -> SlotDirIter<'_> {
+    pub(super) fn iter(&self) -> SlotDirIter<'_> {
         SlotDirIter::new(self.ptr, self.size)
     }
 }
 
-pub struct SlotDirIter<'a> {
+pub(super) struct SlotDirIter<'a> {
     ptr: *const u8,
     size: usize,
     pos: usize,
@@ -670,7 +660,7 @@ pub struct SlotDirIter<'a> {
 }
 
 impl SlotDirIter<'_> {
-    fn new(ptr: *const u8, size: usize) -> Self {
+    pub(super) fn new(ptr: *const u8, size: usize) -> Self {
         Self {
             ptr,
             size,
@@ -680,11 +670,11 @@ impl SlotDirIter<'_> {
     }
 
     #[inline(always)]
-    fn slot_count(&self) -> usize {
+    pub(super) fn slot_count(&self) -> usize {
         self.size / ENTRY_SIZE
     }
 
-    fn next_entry(&mut self) -> Option<SlotEntry> {
+    pub(super) fn next_entry(&mut self) -> Option<SlotEntry> {
         // We return a SlotEntry because we must take the bytes and give back primitives which we can use
         // to compare and find cells with
 
@@ -702,9 +692,6 @@ impl SlotDirIter<'_> {
             let length = read_u16_le_unsafe(start.add(2));
 
             self.pos += 1;
-            println!("pos = {}", self.pos);
-
-            println!("offset {}, length {}", offset, length);
 
             Some(SlotEntry { offset, length })
         }
@@ -719,13 +706,13 @@ impl<'a> Iterator for SlotDirIter<'a> {
 }
 
 #[derive(Debug)]
-pub struct SlotEntry {
+pub(super) struct SlotEntry {
     offset: u16,
     length: u16,
 }
 
 impl SlotEntry {
-    fn new(offset: u16, length: u16) -> Self {
+    pub(super) fn new(offset: u16, length: u16) -> Self {
         SlotEntry { offset, length }
     }
 }
@@ -736,39 +723,69 @@ mod tests {
     use std::{mem, process};
 
     #[test]
+    fn getters_and_setters() {
+        let mut raw_page: RawPage = [0u8; 4096];
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
+
+        // First test page type
+        let c_page_type = page.get_page_type();
+        assert_eq!(c_page_type, 255);
+        let new_page_type: u8 = 1;
+        page.set_page_type(new_page_type);
+        assert_eq!(page.get_page_type(), new_page_type);
+
+        // Second test free start
+        let c_free_start = page.free_start();
+        assert_eq!(c_free_start, HEADER_SIZE);
+        let new_free_start: usize = 25;
+        page.set_free_start(new_free_start);
+        assert_eq!(page.free_start(), new_free_start);
+
+        // Thirs test free end
+        let c_free_end = page.free_end();
+        assert_eq!(c_free_end, PAGE_SIZE);
+        let new_free_end = PAGE_SIZE - 10;
+        page.set_free_end(new_free_end);
+        assert_eq!(page.free_end(), new_free_end);
+
+        // TODO Finish testing ------------- it's boring but just do it
+    }
+
+    #[test]
     fn slot_dir() {
         let mut raw_page: RawPage = [0u8; 4096];
         // We need a mutable view here to initialize the page
-        let mut page = SlottedPageMut::init_new(&mut raw_page);
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
+
+        let mut assert_vec = Vec::with_capacity(3);
 
         page.append_slot_entry(100, 12).unwrap();
+        assert_vec.push((100, 12));
         page.append_slot_entry(200, 21).unwrap();
+        assert_vec.push((200, 21));
         page.append_slot_entry(300, 22).unwrap();
+        assert_vec.push((300, 22));
 
         drop(page);
         // Now we need a ref view
         let ref_page = SlottedPageRef::from_bytes(&raw_page);
         let sd = ref_page.slot_dir_ref();
 
-        for i in sd.iter() {
-            println!("{:?}", i);
+        for (i, se) in sd.iter().enumerate() {
+            assert_eq!(assert_vec[i].0, se.length);
+            assert_eq!(assert_vec[i].1, se.offset);
         }
-
-        let result = ref_page.cell_slice_from_id(SlotID(0)).unwrap();
-        println!("result -> {:?}", result.len());
-
-        // TODO Continue test
     }
 
     #[test]
     fn check_undefined_special() {
         let mut raw_page: RawPage = [0u8; 4096];
         // We need a mutable view here to initialize the page
-        let mut page = SlottedPageMut::init_new(&mut raw_page);
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
         // Should error here
         match page.get_special_mut() {
             Ok(_) => panic!("Expected an error for undefined special area"),
-            Err(e) => println!("Correctly errored: {}", e),
+            Err(e) => println!("Correctly errored"),
         }
     }
 
@@ -776,7 +793,7 @@ mod tests {
     fn check_insert_entry_at_index() {
         let mut raw_page: RawPage = [0u8; 4096];
         // We need a mutable view here to initialize the page
-        let mut page = SlottedPageMut::init_new(&mut raw_page);
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
         page.insert_slot_entry_at_index(
             0,
             SlotEntry {
@@ -816,7 +833,7 @@ mod tests {
     fn adding_cell_append() {
         let mut raw_page: RawPage = [0u8; 4096];
         // We need a mutable view here to initialize the page
-        let mut page = SlottedPageMut::init_new(&mut raw_page);
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
 
         let cell = "I am a cell".as_bytes();
 
@@ -828,10 +845,10 @@ mod tests {
                         let string = str::from_utf8(cell).unwrap();
                         println!("cell contents: {}", string);
                     }
-                    Err(e) => println!("error {}", e),
+                    Err(e) => println!("error"),
                 }
             }
-            Err(e) => panic!("Error adding cell: {}", e),
+            Err(e) => panic!("Error adding cell"),
         }
     }
 }
