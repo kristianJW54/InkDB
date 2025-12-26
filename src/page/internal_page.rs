@@ -62,6 +62,10 @@ pub(crate) struct IndexPageMut<'page> {
 }
 
 impl<'page> IndexPageMut<'page> {
+    pub(crate) fn from_slotted_page(page: SlottedPageMut<'page>) -> Self {
+        IndexPageMut { page }
+    }
+
     pub(crate) fn init_in_place(&mut self, lsn: u64) -> Result<()> {
         // We are given a slotted page from the allocator which we need to initialize
         // This we can assume is being done during a split or tree operation and therefore we must be efficient
@@ -86,11 +90,15 @@ impl<'page> IndexPageMut<'page> {
         Ok(())
     }
 
-    pub(crate) fn get_page_type(&mut self) -> PageType {
+    pub(crate) fn get_page_type(&self) -> PageType {
         PageType::from(self.page.get_page_type())
     }
 
-    pub(crate) fn kind(&mut self) -> PageKind {
+    pub(crate) fn set_page_type(&mut self, page_type: PageKind) {
+        self.page.set_page_type(page_type.into())
+    }
+
+    pub(crate) fn kind(&self) -> PageKind {
         self.get_page_type().page_kind()
     }
 
@@ -194,6 +202,10 @@ impl<'page> IndexPageRef<'page> {
 
     pub(crate) fn get_page_type(&self) -> PageType {
         PageType::from(self.page.get_page_type())
+    }
+
+    pub(crate) fn kind(&self) -> PageKind {
+        self.get_page_type().page_kind()
     }
 
     pub(crate) fn level(&self) -> IndexLevel {

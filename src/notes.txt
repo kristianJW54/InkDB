@@ -27,3 +27,13 @@ Need to understand split page logic - byte aware splits?
 
 // Steps forward is to have 3 elements [Mapping table - Buffer, PageManager] PageManager will coordinate and wire up the mapping table with the buffer
 // Calling code such as tree will only interact with the PageManager
+
+//
+
+TODO
+
+- We need to work on the slotted page file and add in methods for when a caller needs to split pages or transfer data over etc
+- So we need a split_at method
+- We need a transfer_method which takes a mut Slotted Page as paramater
+- We also need to do some work with the Slot Array as we know how many cells we have and their sizes so we can apply some logic to determine good splits and return good errors or context based on this
+- Then we need to define good tests

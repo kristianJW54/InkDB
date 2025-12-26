@@ -1,8 +1,8 @@
 use std::ptr;
 pub mod internal_page;
 pub mod leaf;
-mod raw_page;
-pub(crate) use raw_page::{
+mod slotted_page;
+pub(crate) use slotted_page::{
     ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
 };
 
@@ -96,6 +96,21 @@ pub(super) enum PageKind {
     Free = 0x06,
     Undefined = 0xFF,
     // Up to 15...
+}
+
+impl From<PageKind> for u8 {
+    fn from(pt: PageKind) -> Self {
+        match pt {
+            PageKind::Undefined => PT_UNDEFINED,
+            PageKind::Heap => PT_HEAP,
+            PageKind::IndexInternal => PT_INDEX_INTERNAL,
+            PageKind::IndexMiniLeaf => PT_INDEX_MINI_LEAF,
+            PageKind::IndexLeaf => PT_INDEX_LEAF,
+            PageKind::Meta => PT_META,
+            PageKind::Free => PT_FREE,
+            _ => PT_UNDEFINED,
+        }
+    }
 }
 
 impl PageKind {

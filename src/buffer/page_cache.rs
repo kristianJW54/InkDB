@@ -6,6 +6,7 @@
 
 //NOTE: We can also further optimise by
 
+use crate::buffer::page_frame::PageFrame;
 use crate::page::{PageID, PageKind};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -24,7 +25,8 @@ pub(crate) enum PageCacheError {
 // FnMut() is used here as it allows mutability within the scope of the closure NOT on the bytes itself which are under their respective lock from the cache
 
 pub trait PageCache {
-    fn get(self, page_id: PageID, f: &mut dyn FnMut(&[u8]));
+    fn get(&self, page_id: PageID, f: &mut dyn FnMut(&[u8]));
+    fn fetch(&self, page_id: PageID) -> Result<Arc<PageFrame>>;
     fn put(&self, page: ()) -> Result<()>;
     fn remove(&self, page_id: PageID) -> Result<()>;
 }

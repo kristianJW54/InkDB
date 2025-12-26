@@ -142,7 +142,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn get_page_type(&mut self) -> u8 {
+    pub(crate) fn get_page_type(&self) -> u8 {
         self.bytes[PAGE_TYPE_OFFSET]
     }
 

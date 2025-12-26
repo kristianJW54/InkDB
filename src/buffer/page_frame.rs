@@ -36,6 +36,22 @@ impl PageFrame {
     pub(crate) fn write_guard(&self) -> FrameWriteGuard {
         FrameWriteGuard::new(self.latch.write().unwrap(), self.kind.clone())
     }
+
+    pub(crate) fn read<F>(&self, f: F)
+    where
+        F: FnOnce(&RawPage),
+    {
+        let r = self.read_guard();
+        f(r.raw());
+    }
+
+    pub(crate) fn write<F>(&self, f: F)
+    where
+        F: FnOnce(&mut RawPage),
+    {
+        let mut w = self.write_guard();
+        f(w.raw());
+    }
 }
 
 // Need read and write guards to return slotted page views
@@ -112,24 +128,23 @@ impl<'a> DerefMut for FrameWriteGuard<'a> {
 mod tests {
     use super::*;
     use crate::page::SlottedPageMut;
-    use crate::page::internal_page::IndexPageRef;
+    use crate::page::internal_page::{IndexPageMut, IndexPageRef};
 
     #[test]
     fn get_internal_index_page() {
         let mut raw_page: RawPage = [0u8; 4096];
         let sp = SlottedPageMut::init_new(&mut raw_page);
-        // --------------------------
-        // TODO Fix the API here from slotted page to page interpreted layer
-        // --------------------------
-        let index_internal = IndexPageRef::from_slotted_page(sp);
+        let mut index_internal = IndexPageMut::from_slotted_page(sp);
 
+        index_internal.set_page_type(PageKind::IndexInternal);
+        println!("Internal kind = {:?}", index_internal.kind());
         let frame = PageFrame::new(10, PageKind::IndexInternal, raw_page);
 
         // We take a read only view of the page inside the frame
 
-        {
-            let ref_guard = frame.read_guard();
-            let sp_ref = ref_guard.slotted_ref().ok().unwrap();
-        }
+        frame.read(|rp| {
+            let ref_guard = IndexPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp));
+            println!("Page Kind {:?}", ref_guard.kind())
+        });
     }
 }
