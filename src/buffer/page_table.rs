@@ -39,7 +39,7 @@ use std::sync::{Arc, RwLock};
 
 // ---------- PageTable Trait ----------//
 
-pub(crate) trait PageTable {
+pub(crate) trait PageTable: Send + Sync {
     fn get(&self, page_id: PageID) -> Option<PageTableHandle>; // We return a handle here so the buffer manager can load from disk and flip the state and change the frame address
     fn insert(&self, page_id: PageID, entry: PageTableHandle);
 }

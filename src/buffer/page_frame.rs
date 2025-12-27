@@ -1,6 +1,7 @@
 use crate::page::{PageKind, RawPage};
 use crate::page::{SlottedPageMut, SlottedPageRef};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -10,7 +11,38 @@ pub(super) enum PageFrameError {
     InvalidPageKind,
 }
 
-pub(crate) struct PageFrame {
+// NOTE: Don't know if i need this yet - if PageFrame methods do not grow then we delete
+pub(crate) struct PageHandle(Arc<PageFrame>);
+
+impl PageHandle {
+    pub(crate) fn new(frame: Arc<PageFrame>) -> Self {
+        PageHandle(frame)
+    }
+
+    pub(crate) fn page_kind(&self) -> PageKind {
+        self.0.kind
+    }
+
+    pub(crate) fn with_read<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&RawPage),
+    {
+        let frame = self.0.read_guard();
+        f(frame.raw());
+        Ok(())
+    }
+
+    pub(crate) fn with_write<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut RawPage),
+    {
+        let mut frame = self.0.write_guard();
+        f(frame.raw());
+        Ok(())
+    }
+}
+
+pub(super) struct PageFrame {
     checksum: u32,
     kind: PageKind,
     dirty: AtomicBool,
@@ -19,7 +51,7 @@ pub(crate) struct PageFrame {
 }
 
 impl PageFrame {
-    pub(crate) fn new(checksum: u32, kind: PageKind, raw_page: RawPage) -> Self {
+    pub(super) fn new(checksum: u32, kind: PageKind, raw_page: RawPage) -> Self {
         Self {
             checksum,
             kind,
@@ -29,15 +61,15 @@ impl PageFrame {
         }
     }
 
-    pub(crate) fn read_guard(&self) -> FrameReadGuard {
+    pub(super) fn read_guard<'a>(&'a self) -> FrameReadGuard<'a> {
         FrameReadGuard::new(self.latch.read().unwrap(), self.kind.clone())
     }
 
-    pub(crate) fn write_guard(&self) -> FrameWriteGuard {
+    pub(super) fn write_guard<'a>(&'a self) -> FrameWriteGuard<'a> {
         FrameWriteGuard::new(self.latch.write().unwrap(), self.kind.clone())
     }
 
-    pub(crate) fn read<F>(&self, f: F)
+    pub(super) fn read<F>(&self, f: F)
     where
         F: FnOnce(&RawPage),
     {
@@ -45,7 +77,7 @@ impl PageFrame {
         f(r.raw());
     }
 
-    pub(crate) fn write<F>(&self, f: F)
+    pub(super) fn write<F>(&self, f: F)
     where
         F: FnOnce(&mut RawPage),
     {
@@ -70,7 +102,7 @@ impl<'a> FrameReadGuard<'a> {
         &self.page
     }
 
-    pub(crate) fn slotted_ref(&self) -> Result<SlottedPageRef<'_>> {
+    pub(super) fn slotted_ref(&self) -> Result<SlottedPageRef<'_>> {
         if self.kind.uses_slotted_page_layout() {
             Ok(SlottedPageRef::from_bytes(self.raw()))
         } else {
@@ -101,7 +133,7 @@ impl<'a> FrameWriteGuard<'a> {
         &mut self.page
     }
 
-    pub(crate) fn slotted_mut(&mut self) -> Result<SlottedPageMut<'_>> {
+    pub(super) fn slotted_mut(&mut self) -> Result<SlottedPageMut<'_>> {
         if self.kind.uses_slotted_page_layout() {
             Ok(SlottedPageMut::from_bytes(&mut self.page))
         } else {

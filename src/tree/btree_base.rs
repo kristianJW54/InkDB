@@ -1,6 +1,7 @@
+use crate::buffer::buffer_manager::BufferManagerError;
+use crate::operation::op_ctx::OpCtx;
 use crate::page::PageID;
 use crate::page::internal_page::IndexPageError;
-use crate::transaction::tx_memory::TxMemory;
 // Layers
 // B_inner - base of the b_tree used for traversal and algorithmic logic - coordinating operations
 //
@@ -25,12 +26,19 @@ pub(super) type Result<T> = std::result::Result<T, BTreeInnerError>;
 
 pub(super) enum BTreeInnerError {
     // Define error variants here
+    BufferManagerError(BufferManagerError),
     IndexPageError(IndexPageError),
 }
 
 impl From<IndexPageError> for BTreeInnerError {
     fn from(err: IndexPageError) -> Self {
         BTreeInnerError::IndexPageError(err)
+    }
+}
+
+impl From<BufferManagerError> for BTreeInnerError {
+    fn from(err: BufferManagerError) -> Self {
+        BTreeInnerError::BufferManagerError(err)
     }
 }
 
@@ -42,17 +50,20 @@ struct TraverseCtx<'a> {
 }
 
 pub(super) struct BInner<'blink> {
-    tx: &'blink TxMemory,
+    tx: &'blink OpCtx,
 }
 
 impl<'blink> BInner<'blink> {
-    pub fn new(tx: &'blink TxMemory) -> Self {
+    pub fn new(tx: &'blink OpCtx) -> Self {
         Self { tx }
     }
 
     pub(super) fn traverse_to_leaf(&self, page: PageID, key: &[u8]) -> Result<PageID> {
         // Traversal assumes that the calling B-tree has fetched the root/fast root from the meta page and hands
         // over the page ID to start traversal from.
+        let page_handle = self.tx.cache.fetch_page_read(page)?;
+
+        let kind = page_handle.page_kind();
 
         // We want to traverse down on the key starting from the page
 

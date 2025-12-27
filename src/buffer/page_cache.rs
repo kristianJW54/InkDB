@@ -24,15 +24,14 @@ pub(crate) enum PageCacheError {
 // it is then the responsibility of the caller to interpret the bytes and use them accordingly
 // FnMut() is used here as it allows mutability within the scope of the closure NOT on the bytes itself which are under their respective lock from the cache
 
-pub trait PageCache {
-    fn get(&self, page_id: PageID, f: &mut dyn FnMut(&[u8]));
+pub trait PageCache: Send + Sync {
     fn fetch(&self, page_id: PageID) -> Result<Arc<PageFrame>>;
-    fn put(&self, page: ()) -> Result<()>;
-    fn remove(&self, page_id: PageID) -> Result<()>;
+    fn insert(&self, page_id: PageID, frame: Arc<PageFrame>);
+    fn remove(&self, page_id: PageID);
 }
 
 pub struct BaseFileCache {
-    pub cache: Mutex<HashMap<PageID, Arc<()>>>,
+    pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
 }
 
 impl BaseFileCache {
