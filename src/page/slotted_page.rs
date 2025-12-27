@@ -131,9 +131,10 @@ impl<'a> SlottedPageMut<'a> {
 
     #[inline]
     pub(super) fn memory_used(&self) -> usize {
-        // TODO Finish
         // Need to take free space and then minus that from the total free space (free_start - 4096(including if special offset))
-        // Then test against iterating through and manually counting
+        let non_free_space =
+            PAGE_SIZE - HEADER_SIZE - (PAGE_SIZE - (self.get_special_offset() as usize));
+        non_free_space - self.free_contiguous_space()
     }
 
     #[inline(always)]
@@ -783,10 +784,12 @@ mod tests {
         // We need a mutable view here to initialize the page
         let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
         // Should error here
+        let mut errored = false;
         match page.get_special_mut() {
             Ok(_) => panic!("Expected an error for undefined special area"),
-            Err(e) => println!("Correctly errored"),
+            Err(e) => errored = true,
         }
+        assert!(errored);
     }
 
     #[test]
@@ -805,28 +808,33 @@ mod tests {
             panic!("Failed to insert slot entry at index: {:?}", err);
         });
 
+        // Test index
+        let insert_index = 2;
+
+        let mut assert_vec = Vec::with_capacity(4);
+
         page.append_slot_entry(12, 100).unwrap();
+        assert_vec.push((100, 12));
         page.append_slot_entry(15, 150).unwrap();
+        assert_vec.push((150, 15));
         page.append_slot_entry(40, 200).unwrap();
+        assert_vec.push((200, 40));
 
-        for i in page.slot_dir_ref().iter() {
-            println!("{:?}", i);
-        }
-
-        println!();
+        assert_eq!(assert_vec[insert_index].0, 200);
+        assert_eq!(assert_vec[insert_index].1, 40);
 
         page.insert_slot_entry_at_index(
-            2,
+            insert_index,
             SlotEntry {
                 length: 30,
                 offset: 50,
             },
         )
         .unwrap();
+        assert_vec.insert(insert_index, (50, 30));
 
-        for i in page.slot_dir_ref().iter() {
-            println!("{:?}", i);
-        }
+        assert_eq!(assert_vec[insert_index].0, 50);
+        assert_eq!(assert_vec[insert_index].1, 30);
     }
 
     #[test]
@@ -838,17 +846,31 @@ mod tests {
         let cell = "I am a cell".as_bytes();
 
         match page.add_cell_append_slot_entry(cell) {
-            Ok(_) => {
-                println!("Cell added successfully");
-                match page.cell_slice_from_id(SlotID(0)) {
-                    Ok(cell) => {
-                        let string = str::from_utf8(cell).unwrap();
-                        println!("cell contents: {}", string);
-                    }
-                    Err(e) => println!("error"),
+            Ok(_) => match page.cell_slice_from_id(SlotID(0)) {
+                Ok(cell) => {
+                    let string = str::from_utf8(cell).unwrap();
+                    assert_eq!(string.as_bytes(), cell);
                 }
-            }
+                Err(e) => println!("error"),
+            },
             Err(e) => panic!("Error adding cell"),
         }
+    }
+
+    #[test]
+    fn memory_usage() {
+        let mut raw_page: RawPage = [0u8; 4096];
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
+
+        page.set_special_offset(LSN_SIZE as u16);
+        page.set_free_end(PAGE_SIZE - LSN_SIZE).ok().unwrap();
+
+        let cell = "I am a cell".as_bytes();
+
+        page.add_cell_append_slot_entry(cell).ok().unwrap();
+
+        let want_memory_usage = cell.len() + 4;
+
+        assert_eq!(page.memory_used(), want_memory_usage);
     }
 }

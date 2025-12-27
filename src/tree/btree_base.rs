@@ -34,6 +34,13 @@ impl From<IndexPageError> for BTreeInnerError {
     }
 }
 
+// TOOD Think more on this if we need it
+struct TraverseCtx<'a> {
+    key: &'a [u8],
+    level: u8,
+    stack: Vec<PageID>,
+}
+
 pub(super) struct BInner<'blink> {
     tx: &'blink TxMemory,
 }
@@ -43,7 +50,7 @@ impl<'blink> BInner<'blink> {
         Self { tx }
     }
 
-    pub(super) fn traverse(&self, page: PageID, key: &[u8]) -> Result<PageID> {
+    pub(super) fn traverse_to_leaf(&self, page: PageID, key: &[u8]) -> Result<PageID> {
         // Traversal assumes that the calling B-tree has fetched the root/fast root from the meta page and hands
         // over the page ID to start traversal from.
 
@@ -54,5 +61,5 @@ impl<'blink> BInner<'blink> {
 }
 
 // Need to have insertpath structure for paths - which we can pass to a traverse_with_path?
-// Need to have leafpos - basically slot entry for the leaf page?
-// Need to have cursor/scan - for horizontal movement?
+// Need to have leafpos - basically slot entry for the leaf page this is only when we work inside the leaf page and should not be used outside of latch
+// Need to have cursor/scan - for horizontal movement - scan cursor should logically sit between pages so splits will not interrupt scans and we can continue
