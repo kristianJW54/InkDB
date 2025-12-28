@@ -1,14 +1,23 @@
-use crate::page::{PageKind, RawPage};
+use crate::page::internal_page::IndexPageError;
+use crate::page::{PageID, PageKind, RawPage};
 use crate::page::{SlottedPageMut, SlottedPageRef};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-pub(super) type Result<T> = std::result::Result<T, PageFrameError>;
+pub(crate) type Result<T> = std::result::Result<T, PageFrameError>;
 
-pub(super) enum PageFrameError {
+#[derive(Debug)]
+pub(crate) enum PageFrameError {
+    IndexPageError(IndexPageError),
     InvalidPageKind,
+}
+
+impl From<IndexPageError> for PageFrameError {
+    fn from(err: IndexPageError) -> Self {
+        PageFrameError::IndexPageError(err)
+    }
 }
 
 // NOTE: Don't know if i need this yet - if PageFrame methods do not grow then we delete
@@ -23,26 +32,36 @@ impl PageHandle {
         self.0.kind
     }
 
-    pub(crate) fn with_read<F>(&self, f: F) -> Result<()>
-    where
-        F: FnOnce(&RawPage),
-    {
-        let frame = self.0.read_guard();
-        f(frame.raw());
-        Ok(())
+    pub(crate) fn page_id(&self) -> PageID {
+        self.0.id
     }
 
-    pub(crate) fn with_write<F>(&self, f: F) -> Result<()>
+    /// Executes `f` while holding a read latch on the page.
+    /// The closure may return any error `E` convertible into `PageFrameError`.
+    /// No references to page memory may escape the closure.
+    pub(crate) fn with_read<F, T, E>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut RawPage),
+        // We require the closure to return any error E that can be converted into PageFrameError - not the aliased Result<T>
+        F: FnOnce(&RawPage) -> std::result::Result<T, E>,
+        E: Into<PageFrameError>,
+    {
+        let frame = self.0.read_guard();
+        f(frame.raw()).map_err(Into::into)
+    }
+
+    pub(crate) fn with_write<F, T, E>(&self, f: F) -> Result<T>
+    where
+        // We require the closure to return any error E that can be converted into PageFrameError - not the aliased Result<T>
+        F: FnOnce(&mut RawPage) -> std::result::Result<T, E>,
+        E: Into<PageFrameError>,
     {
         let mut frame = self.0.write_guard();
-        f(frame.raw());
-        Ok(())
+        f(frame.raw()).map_err(Into::into)
     }
 }
 
 pub(super) struct PageFrame {
+    id: PageID,
     checksum: u32,
     kind: PageKind,
     dirty: AtomicBool,
@@ -51,8 +70,9 @@ pub(super) struct PageFrame {
 }
 
 impl PageFrame {
-    pub(super) fn new(checksum: u32, kind: PageKind, raw_page: RawPage) -> Self {
+    pub(super) fn new(id: PageID, checksum: u32, kind: PageKind, raw_page: RawPage) -> Self {
         Self {
+            id,
             checksum,
             kind,
             dirty: AtomicBool::new(false),
@@ -170,7 +190,7 @@ mod tests {
 
         index_internal.set_page_type(PageKind::IndexInternal);
         println!("Internal kind = {:?}", index_internal.kind());
-        let frame = PageFrame::new(10, PageKind::IndexInternal, raw_page);
+        let frame = PageFrame::new(PageID(1), 10, PageKind::IndexInternal, raw_page);
 
         // We take a read only view of the page inside the frame
 

@@ -19,6 +19,7 @@ pub(crate) enum IndexPageError {
     PageError(PageError),
     InvalidPageType,
     InvalidLevel,
+    ChildNotFound,
 }
 
 impl From<PageError> for IndexPageError {
@@ -165,7 +166,7 @@ impl<'page> IndexPageRef<'page> {
         Self { page }
     }
 
-    pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<Option<PageID>> {
+    pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<PageID> {
         let mut high_key = false;
         if self.has_right_sibling() {
             //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
@@ -174,7 +175,7 @@ impl<'page> IndexPageRef<'page> {
             let high_key_cell = IndexCell::from(hkc);
             high_key = true;
             if key > high_key_cell.get_key() {
-                return Ok(self.get_right_sibling());
+                return self.get_right_sibling();
             }
         };
 
@@ -184,10 +185,10 @@ impl<'page> IndexPageRef<'page> {
             let cell = IndexCell::from(self.page.cell_slice_from_entry(se));
             let cell_key = cell.get_key();
             if key < cell_key {
-                return Ok(Some(cell.get_value_ptr()));
+                return Ok(cell.get_value_ptr());
             }
         }
-        Ok(None)
+        Err(IndexPageError::ChildNotFound)
     }
 
     //
@@ -212,13 +213,13 @@ impl<'page> IndexPageRef<'page> {
         IndexLevel::from(self.get_page_type().page_sub_type())
     }
 
-    pub(crate) fn get_right_sibling(&self) -> Option<PageID> {
-        let special = self.page.get_special_ref().ok()?;
+    pub(crate) fn get_right_sibling(&self) -> Result<PageID> {
+        let special = self.page.get_special_ref()?;
         // TODO Add safety info
         unsafe {
             let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);
             let sib = read_u64_le_unsafe(b_ptr);
-            return if sib == 0 { None } else { Some(sib.into()) };
+            return Ok(sib.into());
         }
     }
 }
