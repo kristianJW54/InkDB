@@ -26,6 +26,7 @@ use crate::page::{PageID, PageKind, SlottedPageMut, SlottedPageRef};
 
 pub(super) type Result<T> = std::result::Result<T, BTreeInnerError>;
 
+#[derive(Debug)]
 pub(super) enum BTreeInnerError {
     // Define error variants here
     BufferManagerError(BufferManagerError),
@@ -76,7 +77,8 @@ impl<'blink> BInner<'blink> {
 
         loop {
             // Each iteration we need to fetch the page and then match on the page kind
-            let mut page_handle = self.tx.pager.fetch_page_read(page)?;
+            let page_handle = self.tx.pager.fetch_page_read(page_id)?;
+            println!("on page id {:?}", page_id);
 
             match page_handle.page_kind() {
                 PageKind::IndexInternal => {
@@ -86,10 +88,12 @@ impl<'blink> BInner<'blink> {
                         let internal_page = IndexPageRef::from_slotted_page(sp);
                         internal_page.find_child_ptr(key)
                     })?;
+
+                    println!("moved to {:?}", page_id);
                 }
                 PageKind::IndexLeaf => {
                     // We have reached the leaf page and must return the page id
-                    return Ok(page_handle.page_id());
+                    return Ok(page_id);
                 }
                 _ => {
                     break;
@@ -112,14 +116,138 @@ impl<'blink> BInner<'blink> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffer::buffer_manager::BufferManager;
+    use crate::buffer::page_cache::{BaseFileCache, PageCache};
+    use crate::buffer::page_frame::PageFrame;
+    use crate::buffer::page_table::{NaiveMappingTable, PageTable};
+    use crate::page::RawPage;
+    use crate::page::SlottedPageMut;
+    use crate::page::internal_page::{IndexCellOwned, IndexPageMut};
+    use std::sync::Arc;
 
     #[test]
     fn test_simple_traversal() {
-
         // First setup the page manager
         // Add in a few pages with content
         // Setup OpCtx
         // Make a new tree
         // Traverse to find leaf
+        let mut cache = Arc::new(BaseFileCache::new());
+        let table = Arc::new(NaiveMappingTable::new());
+
+        // Traversal will be
+        // -- Page 123: Mercedes -> Child_ptr = 456, Volvo -> Child_ptr = 789
+        // -- Left Page 456: Dodge -> Child_ptr = 987, Ford
+        // Because we have a right child we can't fall off here and must have two keys in the root(above) layer
+        // -- Right Page 789: Renault, Toyota
+        // -- Left of Page 456 -- Page 987: Audi
+
+        // Insert some pages into the cache
+
+        let mut page1: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::init_new(&mut page1, PageKind::IndexInternal.into());
+        let mut internal1 = IndexPageMut::from_slotted_page(sp);
+
+        internal1
+            .add_cell_append_slot_entry(IndexCellOwned::new("Mercedes".as_bytes(), PageID(456)))
+            .ok()
+            .unwrap();
+        internal1
+            .add_cell_append_slot_entry(IndexCellOwned::new("Volvo".as_bytes(), PageID(789)))
+            .ok()
+            .unwrap();
+
+        let mut page2: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::init_new(&mut page2, PageKind::IndexInternal.into());
+        let mut internal2 = IndexPageMut::from_slotted_page(sp);
+
+        internal2
+            .add_cell_append_slot_entry(IndexCellOwned::new("Dodge".as_bytes(), PageID(987)))
+            .ok()
+            .unwrap();
+        internal2
+            .add_cell_append_slot_entry(IndexCellOwned::new("Ford".as_bytes(), PageID(0)))
+            .ok()
+            .unwrap();
+
+        let mut page3: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::init_new(&mut page3, PageKind::IndexInternal.into());
+        let mut internal3 = IndexPageMut::from_slotted_page(sp);
+
+        internal3
+            .add_cell_append_slot_entry(IndexCellOwned::new("Renault".as_bytes(), PageID(2)))
+            .ok()
+            .unwrap();
+        internal3
+            .add_cell_append_slot_entry(IndexCellOwned::new("Toyota".as_bytes(), PageID(1)))
+            .ok()
+            .unwrap();
+
+        // Insert leaf we want to get
+        let mut page4: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::init_new(&mut page4, PageKind::IndexLeaf.into());
+        let mut leaf1 = IndexPageMut::from_slotted_page(sp);
+
+        leaf1
+            .add_cell_append_slot_entry(IndexCellOwned::new("Audi".as_bytes(), PageID(987)))
+            .ok()
+            .unwrap();
+
+        cache
+            .insert(
+                PageID(123),
+                Arc::new(PageFrame::new(
+                    PageID(123),
+                    10,
+                    PageKind::IndexInternal,
+                    page1,
+                )),
+            )
+            .ok()
+            .unwrap();
+        cache
+            .insert(
+                PageID(456),
+                Arc::new(PageFrame::new(
+                    PageID(456),
+                    10,
+                    PageKind::IndexInternal,
+                    page2,
+                )),
+            )
+            .ok()
+            .unwrap();
+        cache
+            .insert(
+                PageID(789),
+                Arc::new(PageFrame::new(
+                    PageID(789),
+                    10,
+                    PageKind::IndexInternal,
+                    page3,
+                )),
+            )
+            .ok()
+            .unwrap();
+        cache
+            .insert(
+                PageID(987),
+                Arc::new(PageFrame::new(PageID(987), 10, PageKind::IndexLeaf, page4)),
+            )
+            .ok()
+            .unwrap();
+
+        let bm = BufferManager::new(cache, table);
+
+        // Create a op ctx
+        let op_ctx = OpCtx::new_fake_tx(10, Arc::new(bm));
+
+        // Now we create a tree
+
+        let tree = BInner::new(&op_ctx);
+
+        if let Ok(result) = tree.traverse_to_leaf(PageID(123), "Audi".as_bytes()) {
+            println!("Result = {:?}", result);
+        }
     }
 }

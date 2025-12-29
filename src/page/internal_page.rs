@@ -181,14 +181,21 @@ impl<'page> IndexPageRef<'page> {
 
         let skip = if high_key { 1 } else { 0 };
 
+        // We need to store the last child_ptr so if we are not the rightmost child and we are greater than the last key,
+        // we can 'fall off' to the last child_ptr
+        let mut last_child_ptr: Option<PageID> = None;
+
         for se in self.page.slot_dir_ref().iter().skip(skip) {
             let cell = IndexCell::from(self.page.cell_slice_from_entry(se));
+            last_child_ptr = Some(cell.get_value_ptr());
             let cell_key = cell.get_key();
             if key < cell_key {
                 return Ok(cell.get_value_ptr());
             }
         }
-        Err(IndexPageError::ChildNotFound)
+
+        // Fall off to last chil_ptr here
+        return last_child_ptr.ok_or(IndexPageError::ChildNotFound);
     }
 
     //

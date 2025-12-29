@@ -1,5 +1,5 @@
 use crate::buffer::page_cache::PageCache;
-use crate::buffer::page_frame::{FrameReadGuard, FrameWriteGuard, PageHandle};
+use crate::buffer::page_frame::{FrameReadGuard, FrameWriteGuard, PageFrame};
 use crate::buffer::page_table::PageTable;
 use crate::page::PageID;
 use std::sync::Arc;
@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 pub(crate) type Result<T> = std::result::Result<T, BufferManagerError>;
 
+#[derive(Debug)]
 pub(crate) enum BufferManagerError {
     CacheError,
     TableError,
@@ -19,7 +20,7 @@ pub(crate) enum BufferManagerError {
 }
 
 pub(crate) trait PageManager: Send + Sync {
-    fn fetch_page_read(&self, page_id: PageID) -> Result<PageHandle>;
+    fn fetch_page_read(&self, page_id: PageID) -> Result<Arc<PageFrame>>;
 }
 
 pub(crate) struct BufferManager {
@@ -34,8 +35,11 @@ impl BufferManager {
 }
 
 impl PageManager for BufferManager {
-    fn fetch_page_read(&self, page_id: PageID) -> Result<PageHandle> {
-        let frame = self.cache.fetch(page_id).ok().unwrap();
-        Ok(PageHandle::new(frame))
+    fn fetch_page_read(&self, page_id: PageID) -> Result<Arc<PageFrame>> {
+        if let Ok(frame) = self.cache.fetch(page_id) {
+            Ok(frame)
+        } else {
+            Err(BufferManagerError::CacheError)
+        }
     }
 }

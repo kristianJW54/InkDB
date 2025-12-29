@@ -71,7 +71,7 @@ pub(crate) type PageTableHandle = Arc<PageTableEntry>;
 
 // --------------- Naive Implementation ------------ //
 
-struct NaiveMappingTable {
+pub(crate) struct NaiveMappingTable {
     map: Arc<RwLock<HashMap<PageID, PageTableHandle>>>,
 }
 

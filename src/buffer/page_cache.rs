@@ -24,20 +24,44 @@ pub(crate) enum PageCacheError {
 // it is then the responsibility of the caller to interpret the bytes and use them accordingly
 // FnMut() is used here as it allows mutability within the scope of the closure NOT on the bytes itself which are under their respective lock from the cache
 
-pub trait PageCache: Send + Sync {
+pub(crate) trait PageCache: Send + Sync {
     fn fetch(&self, page_id: PageID) -> Result<Arc<PageFrame>>;
-    fn insert(&self, page_id: PageID, frame: Arc<PageFrame>);
+    fn insert(&self, page_id: PageID, frame: Arc<PageFrame>) -> Result<()>;
     fn remove(&self, page_id: PageID);
 }
 
-pub struct BaseFileCache {
-    pub cache: Mutex<HashMap<PageID, Arc<PageFrame>>>,
+pub(crate) struct BaseFileCache {
+    pub cache: Arc<Mutex<HashMap<PageID, Arc<PageFrame>>>>,
 }
 
 impl BaseFileCache {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            cache: Mutex::new(HashMap::new()),
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+}
+
+impl PageCache for BaseFileCache {
+    fn fetch(&self, page_id: PageID) -> Result<Arc<PageFrame>> {
+        let cache = self.cache.lock().unwrap();
+
+        if let Some(frame) = cache.get(&page_id) {
+            Ok(frame.clone())
+        } else {
+            Err(PageCacheError::PageAllocationFailed)
+        }
+    }
+
+    fn insert(&self, page_id: PageID, frame: Arc<PageFrame>) -> Result<()> {
+        let mut cache = self.cache.lock().unwrap();
+        let _ = cache.insert(page_id, frame);
+        Ok(())
+    }
+
+    fn remove(&self, page_id: PageID) {
+        let mut cache = self.cache.lock().unwrap();
+
+        let _ = cache.remove(&page_id);
     }
 }

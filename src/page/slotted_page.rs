@@ -585,8 +585,9 @@ impl<'a> SlottedPageRef<'a> {
 
         let offset = se.offset as usize;
         let length = se.length as usize;
+        println!("offset: {}, length: {}", offset, length);
 
-        debug_assert!(offset + length < PAGE_SIZE);
+        debug_assert!(offset + length <= PAGE_SIZE);
 
         let cell = self.bytes[offset..offset + length].as_ref();
         cell

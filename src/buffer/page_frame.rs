@@ -20,20 +20,37 @@ impl From<IndexPageError> for PageFrameError {
     }
 }
 
-// NOTE: Don't know if i need this yet - if PageFrame methods do not grow then we delete
-pub(crate) struct PageHandle(Arc<PageFrame>);
+pub(crate) struct PageFrame {
+    id: PageID,
+    checksum: u32,
+    kind: PageKind,
+    dirty: AtomicBool,
+    latch: RwLock<RawPage>,
+    pin: AtomicU16,
+}
 
-impl PageHandle {
-    pub(crate) fn new(frame: Arc<PageFrame>) -> Self {
-        PageHandle(frame)
+impl PageFrame {
+    pub(crate) fn new(id: PageID, checksum: u32, kind: PageKind, raw_page: RawPage) -> Self {
+        Self {
+            id,
+            checksum,
+            kind,
+            dirty: AtomicBool::new(false),
+            latch: RwLock::new(raw_page),
+            pin: AtomicU16::new(0),
+        }
     }
 
     pub(crate) fn page_kind(&self) -> PageKind {
-        self.0.kind
+        self.kind
     }
 
-    pub(crate) fn page_id(&self) -> PageID {
-        self.0.id
+    pub(super) fn read_guard<'a>(&'a self) -> FrameReadGuard<'a> {
+        FrameReadGuard::new(self.latch.read().unwrap(), self.kind.clone())
+    }
+
+    pub(super) fn write_guard<'a>(&'a self) -> FrameWriteGuard<'a> {
+        FrameWriteGuard::new(self.latch.write().unwrap(), self.kind.clone())
     }
 
     /// Executes `f` while holding a read latch on the page.
@@ -45,7 +62,7 @@ impl PageHandle {
         F: FnOnce(&RawPage) -> std::result::Result<T, E>,
         E: Into<PageFrameError>,
     {
-        let frame = self.0.read_guard();
+        let frame = self.read_guard();
         f(frame.raw()).map_err(Into::into)
     }
 
@@ -55,54 +72,8 @@ impl PageHandle {
         F: FnOnce(&mut RawPage) -> std::result::Result<T, E>,
         E: Into<PageFrameError>,
     {
-        let mut frame = self.0.write_guard();
+        let mut frame = self.write_guard();
         f(frame.raw()).map_err(Into::into)
-    }
-}
-
-pub(super) struct PageFrame {
-    id: PageID,
-    checksum: u32,
-    kind: PageKind,
-    dirty: AtomicBool,
-    latch: RwLock<RawPage>,
-    pin: AtomicU16,
-}
-
-impl PageFrame {
-    pub(super) fn new(id: PageID, checksum: u32, kind: PageKind, raw_page: RawPage) -> Self {
-        Self {
-            id,
-            checksum,
-            kind,
-            dirty: AtomicBool::new(false),
-            latch: RwLock::new(raw_page),
-            pin: AtomicU16::new(0),
-        }
-    }
-
-    pub(super) fn read_guard<'a>(&'a self) -> FrameReadGuard<'a> {
-        FrameReadGuard::new(self.latch.read().unwrap(), self.kind.clone())
-    }
-
-    pub(super) fn write_guard<'a>(&'a self) -> FrameWriteGuard<'a> {
-        FrameWriteGuard::new(self.latch.write().unwrap(), self.kind.clone())
-    }
-
-    pub(super) fn read<F>(&self, f: F)
-    where
-        F: FnOnce(&RawPage),
-    {
-        let r = self.read_guard();
-        f(r.raw());
-    }
-
-    pub(super) fn write<F>(&self, f: F)
-    where
-        F: FnOnce(&mut RawPage),
-    {
-        let mut w = self.write_guard();
-        f(w.raw());
     }
 }
 
@@ -194,9 +165,13 @@ mod tests {
 
         // We take a read only view of the page inside the frame
 
-        frame.read(|rp| {
-            let ref_guard = IndexPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp));
-            println!("Page Kind {:?}", ref_guard.kind())
-        });
+        frame
+            .with_read(|rp| {
+                let ref_guard = IndexPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp));
+                println!("Page Kind {:?}", ref_guard.kind());
+                Ok::<(), PageFrameError>(())
+            })
+            .ok()
+            .unwrap();
     }
 }
