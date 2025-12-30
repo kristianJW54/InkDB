@@ -2,7 +2,7 @@ use crate::buffer::buffer_manager::BufferManagerError;
 use crate::buffer::page_frame::PageFrameError;
 use crate::operation::op_ctx::OpCtx;
 use crate::page::internal_page::{IndexPageError, IndexPageRef};
-use crate::page::{PageID, PageKind, SlottedPageMut, SlottedPageRef};
+use crate::page::{IndexLevel, PageID, PageKind, SlottedPageMut, SlottedPageRef};
 
 // Layers
 // B_inner - base of the b_tree used for traversal and algorithmic logic - coordinating operations
@@ -32,7 +32,7 @@ pub(super) enum BTreeInnerError {
     BufferManagerError(BufferManagerError),
     IndexPageError(IndexPageError),
     PageFrameError(PageFrameError),
-    TraverseError,
+    TraverseError(PageID, Option<PageKind>), // Would want to format this error message
 }
 
 impl From<IndexPageError> for BTreeInnerError {
@@ -54,9 +54,9 @@ impl From<PageFrameError> for BTreeInnerError {
 }
 
 // TOOD Think more on this if we need it
-struct TraverseCtx<'a> {
+pub(super) struct TraverseCtx<'a> {
     key: &'a [u8],
-    level: u8,
+    level: IndexLevel,
     stack: Vec<PageID>,
 }
 
@@ -96,16 +96,22 @@ impl<'blink> BInner<'blink> {
                     return Ok(page_id);
                 }
                 _ => {
-                    break;
+                    return Err(BTreeInnerError::TraverseError(
+                        page_id,
+                        Some(page_handle.page_kind()),
+                    ));
                 }
             }
         }
+    }
 
-        // We need to loop until we error or are at leaf page
-
-        // We want to traverse down on the key starting from the page
-
-        Ok(PageID(0))
+    pub(super) fn traverse_to_leaf_with_ctx<'a>(
+        &self,
+        page: PageID,
+        key: &'a [u8],
+    ) -> Result<TraverseCtx<'a>> {
+        // TODO Finish
+        todo!("finish")
     }
 }
 
@@ -123,10 +129,24 @@ mod tests {
     use crate::page::RawPage;
     use crate::page::SlottedPageMut;
     use crate::page::internal_page::{IndexCellOwned, IndexPageMut};
+    use std::collections::VecDeque;
     use std::sync::Arc;
 
-    #[test]
-    fn test_simple_traversal() {
+    struct TestTree {
+        tree: OpCtx,
+        pub stack: VecDeque<PageID>,
+    }
+
+    impl TestTree {
+        fn tree(&self) -> BInner<'_> {
+            BInner::new(&self.tree)
+        }
+        fn stack(&self) -> VecDeque<PageID> {
+            self.stack.clone()
+        }
+    }
+
+    fn three_level_tree<'a>() -> TestTree {
         // First setup the page manager
         // Add in a few pages with content
         // Setup OpCtx
@@ -134,6 +154,8 @@ mod tests {
         // Traverse to find leaf
         let mut cache = Arc::new(BaseFileCache::new());
         let table = Arc::new(NaiveMappingTable::new());
+
+        let mut stack = VecDeque::new();
 
         // Traversal will be
         // -- Page 123: Mercedes -> Child_ptr = 456, Volvo -> Child_ptr = 789
@@ -205,6 +227,7 @@ mod tests {
             )
             .ok()
             .unwrap();
+        stack.push_back(PageID(123));
         cache
             .insert(
                 PageID(456),
@@ -217,6 +240,7 @@ mod tests {
             )
             .ok()
             .unwrap();
+        stack.push_back(PageID(456));
         cache
             .insert(
                 PageID(789),
@@ -229,6 +253,7 @@ mod tests {
             )
             .ok()
             .unwrap();
+        stack.push_back(PageID(789));
         cache
             .insert(
                 PageID(987),
@@ -236,6 +261,7 @@ mod tests {
             )
             .ok()
             .unwrap();
+        stack.push_back(PageID(987));
 
         let bm = BufferManager::new(cache, table);
 
@@ -244,10 +270,26 @@ mod tests {
 
         // Now we create a tree
 
-        let tree = BInner::new(&op_ctx);
+        TestTree {
+            tree: op_ctx,
+            stack: stack,
+        }
+    }
 
-        if let Ok(result) = tree.traverse_to_leaf(PageID(123), "Audi".as_bytes()) {
-            println!("Result = {:?}", result);
+    #[test]
+    fn test_simple_traversal() {
+        let tree_obj = three_level_tree();
+        let tree = tree_obj.tree();
+        let mut stack = tree_obj.stack();
+        let root_page = stack.pop_front().unwrap();
+
+        let result = tree.traverse_to_leaf(root_page, "Audi".as_bytes());
+        match result {
+            Ok(page_id) => {
+                assert_eq!(page_id, stack.pop_back().unwrap());
+                println!("Result = {:?}", page_id);
+            }
+            Err(err) => println!("Error = {:?}", err),
         }
     }
 }
