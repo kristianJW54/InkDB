@@ -53,13 +53,6 @@ impl From<PageFrameError> for BTreeInnerError {
     }
 }
 
-// TOOD Think more on this if we need it
-pub(super) struct TraverseCtx<'a> {
-    key: &'a [u8],
-    level: IndexLevel,
-    stack: Vec<PageID>,
-}
-
 pub(super) struct BInner<'blink> {
     tx: &'blink OpCtx,
 }
@@ -110,8 +103,48 @@ impl<'blink> BInner<'blink> {
         page: PageID,
         key: &'a [u8],
     ) -> Result<TraverseCtx<'a>> {
-        // TODO Finish
-        todo!("finish")
+        // Need to set up a stack which we will use to keep track of the traversal path
+        let mut trav_ctx = TraverseCtx::from_key(key);
+
+        let mut page_id = page;
+
+        loop {
+            let page_handle = self.tx.pager.fetch_page_read(page_id)?;
+            trav_ctx.stack.push(page_id);
+            match page_handle.page_kind() {
+                PageKind::IndexInternal => {
+                    let child_ptr = page_handle.with_read(|page| {
+                        let sp = SlottedPageRef::from_bytes(page);
+                        let internal = IndexPageRef::from_slotted_page(sp);
+                        internal.find_child_ptr(key)
+                    })?;
+                    page_id = child_ptr;
+                }
+                PageKind::IndexLeaf => {
+                    return Ok(trav_ctx);
+                }
+                _ => {
+                    return Err(BTreeInnerError::TraverseError(
+                        page_id,
+                        Some(page_handle.page_kind()),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+pub(super) struct TraverseCtx<'a> {
+    key: &'a [u8],
+    stack: Vec<PageID>,
+}
+
+impl<'a> TraverseCtx<'a> {
+    pub(super) fn from_key(key: &'a [u8]) -> Self {
+        Self {
+            key,
+            stack: Vec::new(),
+        }
     }
 }
 
@@ -146,7 +179,7 @@ mod tests {
         }
     }
 
-    fn three_level_tree<'a>() -> TestTree {
+    fn three_level_tree() -> TestTree {
         // First setup the page manager
         // Add in a few pages with content
         // Setup OpCtx
@@ -288,6 +321,26 @@ mod tests {
             Ok(page_id) => {
                 assert_eq!(page_id, stack.pop_back().unwrap());
                 println!("Result = {:?}", page_id);
+            }
+            Err(err) => println!("Error = {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_traversal_path() {
+        let tree_obj = three_level_tree();
+        let mut stack = tree_obj.stack();
+        let tree = tree_obj.tree();
+
+        let root_page = stack.pop_front().unwrap();
+
+        let result = tree.traverse_to_leaf_with_ctx(root_page, "Audi".as_bytes());
+        match result {
+            Ok(ctx) => {
+                assert_eq!(ctx.stack.len(), stack.len());
+                for (i, page_id) in ctx.stack.iter().enumerate() {
+                    println!("Index: {}, Page ID: {:?}", i, page_id);
+                }
             }
             Err(err) => println!("Error = {:?}", err),
         }

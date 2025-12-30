@@ -37,3 +37,6 @@ TODO
 - We need a transfer_method which takes a mut Slotted Page as paramater
 - We also need to do some work with the Slot Array as we know how many cells we have and their sizes so we can apply some logic to determine good splits and return good errors or context based on this
 - Then we need to define good tests
+
+// TODO Want to look at how we handle re-traversing to a level if we are propagating a split and the tree has changed invalidating our path
+// TODO Want to look at concurrent traversal and reading pages etc --> Where do we want to do that
