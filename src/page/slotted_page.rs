@@ -5,7 +5,7 @@
 use crate::page::*;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 use std::ptr;
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
@@ -321,6 +321,31 @@ impl<'a> SlottedPageMut<'a> {
         }
     }
 
+    pub(super) fn remove_slot_index_range(&mut self, range: Range<usize>) -> Result<()> {
+        let slot_count = self.slot_dir_ref().slot_count();
+        assert!(range.start < range.end);
+        assert!(range.end <= slot_count);
+
+        // How many slots are being removed
+        let removed = range.end - range.start;
+        // How many slots are at the tail after the range
+        let tail = slot_count - range.end;
+
+        // What is the size of the removed bytes
+        let removed_bytes = removed * ENTRY_SIZE;
+        // What is the size of the bytes that need to be shifted
+        let shift_size = tail * ENTRY_SIZE;
+
+        // We need to get the destination offset of where we want to shift the tail bytes to after the removed bytes
+        let dst_offset = range.start * ENTRY_SIZE;
+        // What is the source destination offset of the tail bytes that need to be shifted
+        let src_offset = range.end * ENTRY_SIZE;
+
+        // TODO we need to shift the bytes using ptr::copy and then we zero out the bytes in any tail before adjusting the free_start
+
+        todo!("finish")
+    }
+
     pub(super) fn get_special_ref(&self) -> Result<&'_ [u8]> {
         let s_offset = self.get_special_offset() as usize;
         if s_offset == 0 {
@@ -457,6 +482,14 @@ impl<'a> SlottedPageMut<'a> {
 
         let cell = self.bytes[offset..offset + length].as_ref();
         cell
+    }
+
+    pub(super) fn transfer(
+        &mut self,
+        slot_index: Range<usize>,
+        page: &mut SlottedPageMut,
+    ) -> Result<()> {
+        todo!("finish the implementation")
     }
 }
 
@@ -649,8 +682,24 @@ impl<'a> SlotRef<'a> {
         self.size / size_of::<SlotEntry>()
     }
 
-    pub(super) fn iter(&self) -> SlotDirIter<'_> {
+    pub(super) fn iter(&self) -> SlotDirIter<'a> {
         SlotDirIter::new(self.ptr, self.size)
+    }
+}
+
+pub(super) struct SlotDirMut<'a> {
+    ptr: *mut u8,
+    size: usize,
+    _marker: PhantomData<&'a u8>,
+}
+
+impl<'a> SlotDirMut<'a> {
+    pub(super) fn new(start: *mut u8, size: usize) -> Self {
+        Self {
+            ptr: start,
+            size,
+            _marker: PhantomData,
+        }
     }
 }
 
