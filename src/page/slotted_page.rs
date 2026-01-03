@@ -184,6 +184,21 @@ impl<'a> SlottedPageMut<'a> {
         Ok(new_fs)
     }
 
+    #[inline(always)]
+    pub(super) fn decrement_free_start(&mut self, bytes: usize) -> Result<usize> {
+        let cur_fs = self.free_start();
+        let new_fs = cur_fs - bytes;
+
+        assert!(new_fs >= HEADER_SIZE);
+
+        unsafe {
+            let b_ptr = self.bytes.as_mut_ptr().add(FREE_START_OFFSET);
+            write_u16_le_unsafe(b_ptr, new_fs as u16);
+        }
+
+        Ok(new_fs)
+    }
+
     #[inline]
     pub(super) fn set_free_end(&mut self, offset: usize) -> Result<()> {
         debug_assert!(offset >= HEADER_SIZE);
@@ -323,6 +338,7 @@ impl<'a> SlottedPageMut<'a> {
 
     pub(super) fn remove_slot_index_range(&mut self, range: Range<usize>) -> Result<()> {
         let slot_count = self.slot_dir_ref().slot_count();
+        let fs = self.free_start() as isize;
         assert!(range.start < range.end);
         assert!(range.end <= slot_count);
 
@@ -341,9 +357,49 @@ impl<'a> SlottedPageMut<'a> {
         // What is the source destination offset of the tail bytes that need to be shifted
         let src_offset = range.end * ENTRY_SIZE;
 
-        // TODO we need to shift the bytes using ptr::copy and then we zero out the bytes in any tail before adjusting the free_start
+        // Get the header size as isize
+        let header_size = HEADER_SIZE as isize;
 
-        todo!("finish")
+        let end_of_shifted = (dst_offset + shift_size) + HEADER_SIZE;
+
+        // TODO ADD SAFETY
+        unsafe {
+            // a, b, c, d, e, f, g,
+            // a, b,[c, d, e,]f, g, - Range = 2..5
+            // a, b, _, _, _, f, g, - Removed = 12 - Shifted = 8
+            // a, b, f, g, _, _, _, - Tail = 12
+
+            // if we have tail bytes to shift then we must copy the src_offset to the dst_offset
+            let b_ptr = self.bytes.as_mut_ptr();
+            if tail > 0 {
+                ptr::copy(
+                    b_ptr.offset(header_size + src_offset as isize),
+                    b_ptr.offset(header_size + dst_offset as isize),
+                    shift_size,
+                );
+            }
+
+            // Now need to zero out the trailing bytes (delete entries)
+            // Write out the trailing bytes to be 0
+            ptr::write_bytes(
+                b_ptr.offset(header_size + end_of_shifted as isize),
+                0,
+                shift_size,
+            )
+        }
+
+        // Decrement the free start by the shift size
+        let new_fs = self.decrement_free_start(removed_bytes);
+        match new_fs {
+            Ok(fs) => {
+                if fs != end_of_shifted {
+                    Err(PageError::InvalidFreeStart)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub(super) fn get_special_ref(&self) -> Result<&'_ [u8]> {
@@ -489,6 +545,9 @@ impl<'a> SlottedPageMut<'a> {
         slot_index: Range<usize>,
         page: &mut SlottedPageMut,
     ) -> Result<()> {
+        // First validate the slot range is within the page slot array
+        let slot_count = self.slot_dir_ref().slot_count();
+
         todo!("finish the implementation")
     }
 }
@@ -922,5 +981,40 @@ mod tests {
         let want_memory_usage = cell.len() + 4;
 
         assert_eq!(page.memory_used(), want_memory_usage);
+    }
+
+    #[test]
+    fn remove_slot_range() {
+        let mut raw_page: RawPage = [0u8; 4096];
+        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
+
+        // Append a bunch of slot entries
+        page.append_slot_entry(10, 100).ok().unwrap(); // A
+        page.append_slot_entry(12, 120).ok().unwrap(); // B
+        page.append_slot_entry(12, 120).ok().unwrap(); // C
+        page.append_slot_entry(14, 140).ok().unwrap(); // D
+        page.append_slot_entry(16, 160).ok().unwrap(); // E
+        page.append_slot_entry(18, 180).ok().unwrap(); // F
+        page.append_slot_entry(20, 200).ok().unwrap(); // G
+
+        let fs = page.free_start();
+
+        let slot_count = page.slot_dir_ref().slot_count();
+        assert_eq!(slot_count, 7);
+
+        // Now we need to remove a range from the slot array and check both slot_count and free_start
+
+        let result = page.remove_slot_index_range(2..5);
+        match result {
+            Ok(()) => {
+                let new_count = page.slot_dir_ref().slot_count();
+                assert_eq!(new_count, 4);
+                let new_fs = fs - (3 * ENTRY_SIZE);
+                assert_eq!(new_fs, page.free_start());
+            }
+            Err(e) => {
+                panic!("Error removing slot range: {:?}", e);
+            }
+        }
     }
 }

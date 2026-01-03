@@ -40,3 +40,7 @@ TODO
 
 // TODO Want to look at how we handle re-traversing to a level if we are propagating a split and the tree has changed invalidating our path
 // TODO Want to look at concurrent traversal and reading pages etc --> Where do we want to do that
+
+// TODO Implement Binary Search on slot array - if we have more than a slot_count which warrants it
+// TODO Implement a get split index on the page specific layers which returns a split_index(ctx?) and then passes to a split handler to return a range
+// and pass to a trnasfer on the slotted page mut - but we need to have been given a new page by the tree(op_ctx -> buffer manager)
