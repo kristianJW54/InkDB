@@ -130,12 +130,27 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(super) fn memory_used(&self) -> usize {
-        // Need to take free space and then minus that from the total free space (free_start - 4096(including if special offset))
-        let non_free_space =
-            PAGE_SIZE - HEADER_SIZE - (PAGE_SIZE - (self.get_special_offset() as usize));
-        non_free_space - self.free_contiguous_space()
+    pub(super) fn memory_used_non_frag(&self) -> usize {
+        let special_off = self.get_special_offset() as usize;
+
+        let payload_end = if special_off == 0 {
+            PAGE_SIZE
+        } else {
+            special_off
+        };
+
+        debug_assert!(payload_end >= HEADER_SIZE);
+        debug_assert!(payload_end <= PAGE_SIZE);
+
+        let payload_capacity = payload_end - HEADER_SIZE;
+        let free = self.free_contiguous_space();
+
+        debug_assert!(free <= payload_capacity);
+
+        payload_capacity - free
     }
+
+    // TODO make a memory_used_frag method
 
     #[inline(always)]
     pub(super) fn free_start(&self) -> usize {
@@ -548,7 +563,14 @@ impl<'a> SlottedPageMut<'a> {
         // First validate the slot range is within the page slot array
         let slot_count = self.slot_dir_ref().slot_count();
 
-        todo!("finish the implementation")
+        assert!(slot_index.start < slot_index.end);
+        assert!(slot_index.end <= slot_count);
+
+        // Now we need to transfer the cells to the given page first to ensure this succeeds before we remove our own bytes
+        // First we must validate the passed page is ready to receive the bytes - but we don't try to fix, we only want to make sure we are able to
+        // do our job
+        assert_eq!(page.memory_used_non_frag(), 0);
+        Ok(())
     }
 }
 
@@ -832,6 +854,27 @@ mod tests {
     use super::*;
     use std::{mem, process};
 
+    fn half_full_page(insert_test_at_index: usize) -> Result<RawPage> {
+        let mut rp: RawPage = [0u8; 4096];
+
+        let mut sp = SlottedPageMut::init_new(&mut rp, 255);
+
+        let min_key_size = 10;
+        let entries_needed = 2000 / min_key_size;
+
+        for i in 0..entries_needed {
+            if i == insert_test_at_index {
+                let key = "I am a test".as_bytes();
+                sp.add_cell_append_slot_entry(key)?;
+                continue;
+            }
+            let mut key = [1u8; 10];
+            key[9] = 2;
+            sp.add_cell_append_slot_entry(&key)?;
+        }
+        Ok(rp)
+    }
+
     #[test]
     fn getters_and_setters() {
         let mut raw_page: RawPage = [0u8; 4096];
@@ -980,7 +1023,7 @@ mod tests {
 
         let want_memory_usage = cell.len() + 4;
 
-        assert_eq!(page.memory_used(), want_memory_usage);
+        assert_eq!(page.memory_used_non_frag(), want_memory_usage);
     }
 
     #[test]
@@ -1014,6 +1057,53 @@ mod tests {
             }
             Err(e) => {
                 panic!("Error removing slot range: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn retrieving_cells() {
+        let page = half_full_page(0);
+        match page {
+            Ok(p) => {
+                // We have inserted a test message at index 0 of the slot_array test fetching this
+                let sp = SlottedPageRef::from_bytes(&p);
+                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
+                assert_eq!(str, "I am a test");
+            }
+            Err(e) => {
+                panic!("Error creating half-full page: {:?}", e);
+            }
+        }
+        let page2 = half_full_page(30);
+        match page2 {
+            Ok(p) => {
+                // We have inserted a test message at index 0 of the slot_array test fetching this
+                let sp = SlottedPageRef::from_bytes(&p);
+                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(30)).ok().unwrap());
+                assert_eq!(str, "I am a test");
+            }
+            Err(e) => {
+                panic!("Error creating half-full page: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_page() {
+        let mut page = half_full_page(0).ok().unwrap();
+        let mut sp = SlottedPageMut::from_bytes(&mut page);
+        let mut page2: RawPage = [0u8; 4096];
+        let mut sp2 = SlottedPageMut::init_new(&mut page2, 255);
+
+        // Now we want to call transfer - we should be ok as the page2 is empty
+        let result = sp.transfer(1..2, &mut sp2);
+        match result {
+            Ok(_) => {
+                println!("Transfer successful");
+            }
+            Err(e) => {
+                println!("Transfer failed: {:?}", e);
             }
         }
     }
