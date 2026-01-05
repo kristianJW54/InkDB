@@ -273,7 +273,7 @@ impl<'a> SlottedPageMut<'a> {
     //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
     // to insert a slot_entry
     //NOTE: Do we need to pass in u16 or if this is called after inserting row data can we pass in ptr?
-    pub(super) fn append_slot_entry(&mut self, size: u16, offset: u16) -> Result<()> {
+    pub(super) fn append_slot_entry(&mut self, entry: SlotEntry) -> Result<()> {
         let fs = self.free_start();
         let end = self.free_end();
 
@@ -288,8 +288,8 @@ impl<'a> SlottedPageMut<'a> {
             // Get pointer to the start of free space
             let ptr = self.bytes.as_mut_ptr().wrapping_add(fs);
 
-            let offset_bytes = offset.to_le_bytes();
-            let length_bytes = size.to_le_bytes();
+            let offset_bytes = entry.offset.to_le_bytes();
+            let length_bytes = entry.length.to_le_bytes();
 
             ptr::copy_nonoverlapping(offset_bytes.as_ptr(), ptr, 2);
             ptr::copy_nonoverlapping(length_bytes.as_ptr(), ptr.add(2), 2);
@@ -322,7 +322,7 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         if idx == slot_count {
-            return self.append_slot_entry(entry.length, entry.offset);
+            return self.append_slot_entry(entry);
         }
 
         let index_offset = HEADER_SIZE + (idx * ENTRY_SIZE);
@@ -349,6 +349,24 @@ impl<'a> SlottedPageMut<'a> {
 
             Ok(())
         }
+    }
+
+    pub(super) fn prepend_slot_entry(&mut self, entry: SlotEntry) -> Result<()> {
+        let fs = self.free_start();
+        let end = self.free_end();
+
+        if end - fs < ENTRY_SIZE {
+            return Err(PageError::NotEnoughFreeSpace);
+        }
+
+        // SAFETY: We have checked that there is enough free space for at least one entry slot. The caller should have already inserted the cell
+        // We can safely add the entry to the beginning of the slot array after allocating entry space in the array.
+        unsafe {
+
+            // TODO!
+        }
+
+        Ok(())
     }
 
     pub(super) fn remove_slot_index_range(&mut self, range: Range<usize>) -> Result<()> {
@@ -456,7 +474,12 @@ impl<'a> SlottedPageMut<'a> {
         assert!(cell.len() <= u16::MAX as usize);
         assert!(cell_start_offset <= u16::MAX as usize);
 
-        self.append_slot_entry(cell.len() as u16, cell_start_offset as u16)?;
+        let entry = SlotEntry {
+            offset: cell_start_offset as u16,
+            length: cell.len() as u16,
+        };
+
+        self.append_slot_entry(entry)?;
 
         // We now need to start from free_end and grow upwards by copying in the cell data
         // SAFETY: We are copying from a valid slice to a valid memory location and not overlapping
@@ -506,7 +529,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: u16) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -516,7 +539,7 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::EmptySlotDir);
         }
 
-        let idx = slot_id.0 as usize;
+        let idx = slot_id as usize;
 
         if idx >= slot_count {
             return Err(PageError::SlotIDOutOfBounds);
@@ -542,6 +565,40 @@ impl<'a> SlottedPageMut<'a> {
         }
     }
 
+    pub(super) fn cell_and_entry_from_index(
+        &self,
+        slot_index: u16,
+    ) -> Result<(&'_ [u8], &'_ [u8])> {
+        let slot_dir = self.slot_dir_ref();
+        let slot_count = slot_dir.slot_count();
+
+        let idx = slot_index as usize;
+
+        assert!(idx < slot_count);
+
+        let index_offset = idx * ENTRY_SIZE;
+
+        // SAFETY: We know we have a valid slot entry and that it is within bounds
+        // We can get a reference to the slot directory and use it's stored ptr to offset to the slot_index
+        unsafe {
+            let b_ptr = slot_dir.ptr.add(index_offset);
+
+            let offset = read_u16_le_unsafe(b_ptr) as usize;
+            let length = read_u16_le_unsafe(b_ptr.add(2)) as usize;
+
+            let end = offset + length;
+
+            if end > PAGE_SIZE {
+                return Err(PageError::CorruptCell);
+            }
+
+            let cell_ref = self.bytes[offset..offset + length].as_ref();
+            let se_ref = self.bytes[index_offset..index_offset + ENTRY_SIZE].as_ref();
+
+            Ok((se_ref, cell_ref))
+        }
+    }
+
     pub(super) fn cell_slice_from_entry(&self, se: SlotEntry) -> &'_ [u8] {
         // We have a valid slot entry. The only way we would be able to get this is if there also exists a valid
         // cell area
@@ -555,21 +612,26 @@ impl<'a> SlottedPageMut<'a> {
         cell
     }
 
-    pub(super) fn transfer(
-        &mut self,
-        slot_index: Range<usize>,
-        page: &mut SlottedPageMut,
-    ) -> Result<()> {
+    pub(super) fn transfer(&mut self, slot_index: SlotID, page: &mut SlottedPageMut) -> Result<()> {
         // First validate the slot range is within the page slot array
-        let slot_count = self.slot_dir_ref().slot_count();
+        let slot_dir = self.slot_dir_ref();
+        let slot_count = slot_dir.slot_count() as u16;
 
-        assert!(slot_index.start < slot_index.end);
-        assert!(slot_index.end <= slot_count);
+        assert!(slot_index.0 < slot_count);
 
         // Now we need to transfer the cells to the given page first to ensure this succeeds before we remove our own bytes
         // First we must validate the passed page is ready to receive the bytes - but we don't try to fix, we only want to make sure we are able to
         // do our job
         assert_eq!(page.memory_used_non_frag(), 0);
+
+        for idx in slot_index.0..slot_count {
+            if let Ok((se, cell)) = self.cell_and_entry_from_index(idx) {
+                println!("se {:?}", se);
+                println!();
+                println!("cell {:?}", cell);
+                continue;
+            }
+        }
         Ok(())
     }
 }
@@ -705,6 +767,40 @@ impl<'a> SlottedPageRef<'a> {
 
         let cell = self.bytes[offset..offset + length].as_ref();
         cell
+    }
+
+    pub(super) fn cell_and_entry_from_index(
+        &self,
+        slot_index: u16,
+    ) -> Result<(&'_ [u8], &'_ [u8])> {
+        let slot_dir = self.slot_dir_ref();
+        let slot_count = slot_dir.slot_count();
+
+        let idx = slot_index as usize;
+
+        assert!(idx < slot_count);
+
+        let index_offset = idx * ENTRY_SIZE;
+
+        // SAFETY: We know we have a valid slot entry and that it is within bounds
+        // We can get a reference to the slot directory and use it's stored ptr to offset to the slot_index
+        unsafe {
+            let b_ptr = slot_dir.ptr.add(index_offset);
+
+            let offset = read_u16_le_unsafe(b_ptr) as usize;
+            let length = read_u16_le_unsafe(b_ptr.add(2)) as usize;
+
+            let end = offset + length;
+
+            if end > PAGE_SIZE {
+                return Err(PageError::CorruptCell);
+            }
+
+            let cell_ref = self.bytes[offset..offset + length].as_ref();
+            let se_ref = self.bytes[index_offset..index_offset + ENTRY_SIZE].as_ref();
+
+            Ok((se_ref, cell_ref))
+        }
     }
 
     // Operator Methods
@@ -856,22 +952,31 @@ mod tests {
 
     fn half_full_page(insert_test_at_index: usize) -> Result<RawPage> {
         let mut rp: RawPage = [0u8; 4096];
-
         let mut sp = SlottedPageMut::init_new(&mut rp, 255);
 
-        let min_key_size = 10;
-        let entries_needed = 2000 / min_key_size;
+        let key_len = 10;
+        let entry_cost = ENTRY_SIZE + key_len;
 
-        for i in 0..entries_needed {
+        let payload_end = if sp.get_special_offset() == 0 {
+            PAGE_SIZE
+        } else {
+            sp.get_special_offset() as usize
+        };
+
+        let payload_capacity = payload_end - HEADER_SIZE;
+        let target_used = payload_capacity / 2;
+        let entries_needed = target_used / entry_cost;
+
+        for i in 0..=entries_needed {
             if i == insert_test_at_index {
-                let key = "I am a test".as_bytes();
-                sp.add_cell_append_slot_entry(key)?;
-                continue;
+                sp.add_cell_at_slot_entry_index(i, b"I am a test")?;
+            } else {
+                let mut key = [1u8; 10];
+                key[9] = 2;
+                sp.add_cell_at_slot_entry_index(i, &key)?;
             }
-            let mut key = [1u8; 10];
-            key[9] = 2;
-            sp.add_cell_append_slot_entry(&key)?;
         }
+
         Ok(rp)
     }
 
@@ -912,11 +1017,11 @@ mod tests {
 
         let mut assert_vec = Vec::with_capacity(3);
 
-        page.append_slot_entry(100, 12).unwrap();
+        page.append_slot_entry(SlotEntry::new(100, 12)).unwrap();
         assert_vec.push((100, 12));
-        page.append_slot_entry(200, 21).unwrap();
+        page.append_slot_entry(SlotEntry::new(200, 21)).unwrap();
         assert_vec.push((200, 21));
-        page.append_slot_entry(300, 22).unwrap();
+        page.append_slot_entry(SlotEntry::new(300, 22)).unwrap();
         assert_vec.push((300, 22));
 
         drop(page);
@@ -965,11 +1070,11 @@ mod tests {
 
         let mut assert_vec = Vec::with_capacity(4);
 
-        page.append_slot_entry(12, 100).unwrap();
+        page.append_slot_entry(SlotEntry::new(100, 12)).unwrap();
         assert_vec.push((100, 12));
-        page.append_slot_entry(15, 150).unwrap();
+        page.append_slot_entry(SlotEntry::new(150, 15)).unwrap();
         assert_vec.push((150, 15));
-        page.append_slot_entry(40, 200).unwrap();
+        page.append_slot_entry(SlotEntry::new(200, 40)).unwrap();
         assert_vec.push((200, 40));
 
         assert_eq!(assert_vec[insert_index].0, 200);
@@ -998,7 +1103,7 @@ mod tests {
         let cell = "I am a cell".as_bytes();
 
         match page.add_cell_append_slot_entry(cell) {
-            Ok(_) => match page.cell_slice_from_id(SlotID(0)) {
+            Ok(_) => match page.cell_slice_from_id(0) {
                 Ok(cell) => {
                     let string = str::from_utf8(cell).unwrap();
                     assert_eq!(string.as_bytes(), cell);
@@ -1032,13 +1137,27 @@ mod tests {
         let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
 
         // Append a bunch of slot entries
-        page.append_slot_entry(10, 100).ok().unwrap(); // A
-        page.append_slot_entry(12, 120).ok().unwrap(); // B
-        page.append_slot_entry(12, 120).ok().unwrap(); // C
-        page.append_slot_entry(14, 140).ok().unwrap(); // D
-        page.append_slot_entry(16, 160).ok().unwrap(); // E
-        page.append_slot_entry(18, 180).ok().unwrap(); // F
-        page.append_slot_entry(20, 200).ok().unwrap(); // G
+        page.append_slot_entry(SlotEntry::new(100, 10))
+            .ok()
+            .unwrap(); // A
+        page.append_slot_entry(SlotEntry::new(120, 12))
+            .ok()
+            .unwrap(); // B
+        page.append_slot_entry(SlotEntry::new(140, 14))
+            .ok()
+            .unwrap(); // C
+        page.append_slot_entry(SlotEntry::new(160, 16))
+            .ok()
+            .unwrap(); // D
+        page.append_slot_entry(SlotEntry::new(180, 18))
+            .ok()
+            .unwrap(); // E
+        page.append_slot_entry(SlotEntry::new(200, 20))
+            .ok()
+            .unwrap(); // F
+        page.append_slot_entry(SlotEntry::new(220, 22))
+            .ok()
+            .unwrap(); // G
 
         let fs = page.free_start();
 
@@ -1096,15 +1215,17 @@ mod tests {
         let mut page2: RawPage = [0u8; 4096];
         let mut sp2 = SlottedPageMut::init_new(&mut page2, 255);
 
+        println!("page 2 memory {:?}", sp2.memory_used_non_frag());
+
         // Now we want to call transfer - we should be ok as the page2 is empty
-        let result = sp.transfer(1..2, &mut sp2);
-        match result {
-            Ok(_) => {
-                println!("Transfer successful");
-            }
-            Err(e) => {
-                println!("Transfer failed: {:?}", e);
-            }
-        }
+        let result = sp.transfer(SlotID(190), &mut sp2);
+        // match result {
+        //     Ok(_) => {
+        //         println!("Transfer successful");
+        //     }
+        //     Err(e) => {
+        //         println!("Transfer failed: {:?}", e);
+        //     }
+        // }
     }
 }
