@@ -44,3 +44,5 @@ TODO
 // TODO Implement Binary Search on slot array - if we have more than a slot_count which warrants it
 // TODO Implement a get split index on the page specific layers which returns a split_index(ctx?) and then passes to a split handler to return a range
 // and pass to a trnasfer on the slotted page mut - but we need to have been given a new page by the tree(op_ctx -> buffer manager)
+
+// Need to think about Comparitors for the b-tree and how we do that

@@ -281,12 +281,14 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::NotEnoughFreeSpace);
         }
 
+        debug_assert!(fs + ENTRY_SIZE <= PAGE_SIZE);
+
         //SAFETY: We know we have valid page space of [u8;4096] this will not fail. However, it is up to the caller
         // for page interpretation and correctness that the space we write is valid free space
         //SAFETY: We call this in a mut self method meaning we have exclusive access to the page
         unsafe {
             // Get pointer to the start of free space
-            let ptr = self.bytes.as_mut_ptr().wrapping_add(fs);
+            let ptr = self.bytes.as_mut_ptr().add(fs);
 
             let offset_bytes = entry.offset.to_le_bytes();
             let length_bytes = entry.length.to_le_bytes();
@@ -359,14 +361,33 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::NotEnoughFreeSpace);
         }
 
+        debug_assert!(fs + ENTRY_SIZE <= PAGE_SIZE);
+        debug_assert!(fs >= HEADER_SIZE);
+
         // SAFETY: We have checked that there is enough free space for at least one entry slot. The caller should have already inserted the cell
         // We can safely add the entry to the beginning of the slot array after allocating entry space in the array.
         unsafe {
+            let b_ptr = self.bytes.as_mut_ptr();
 
-            // TODO!
+            // Shift the whole slot_dir an entry size to the right
+            ptr::copy(
+                b_ptr.add(HEADER_SIZE),
+                b_ptr.add(HEADER_SIZE + ENTRY_SIZE),
+                fs - HEADER_SIZE,
+            );
+
+            // Get the entry bytes
+            let offset_bytes = entry.offset.to_le_bytes();
+            let length_bytes = entry.length.to_le_bytes();
+
+            // Now copy in the entry bytes to the beginning of the array
+            ptr::copy(offset_bytes.as_ptr(), b_ptr.add(HEADER_SIZE), 2);
+            ptr::copy(length_bytes.as_ptr(), b_ptr.add(HEADER_SIZE + 2), 2);
+
+            self.increment_free_start(ENTRY_SIZE)?;
+
+            Ok(())
         }
-
-        Ok(())
     }
 
     pub(super) fn remove_slot_index_range(&mut self, range: Range<usize>) -> Result<()> {
@@ -457,7 +478,7 @@ impl<'a> SlottedPageMut<'a> {
         Ok(&mut self.bytes[s_offset..s_offset + size])
     }
 
-    pub(super) fn add_cell_append_slot_entry(&mut self, cell: &[u8]) -> Result<()> {
+    pub(super) fn alloc_cell(&mut self, cell: &[u8]) -> Result<SlotEntry> {
         // Check we have enough free space?
         // We talk only to contigious space here because we can return Err(PageError::NoContigiousSpace)
         // And allow the caller to call back into the raw page methods to either compact or split the page
@@ -479,8 +500,6 @@ impl<'a> SlottedPageMut<'a> {
             length: cell.len() as u16,
         };
 
-        self.append_slot_entry(entry)?;
-
         // We now need to start from free_end and grow upwards by copying in the cell data
         // SAFETY: We are copying from a valid slice to a valid memory location and not overlapping
         unsafe {
@@ -491,40 +510,15 @@ impl<'a> SlottedPageMut<'a> {
         // After successful insertion we need to update free_end
         self.set_free_end(cell_start_offset)?;
 
-        Ok(())
+        Ok(entry)
     }
 
-    pub(super) fn add_cell_at_slot_entry_index(&mut self, index: usize, cell: &[u8]) -> Result<()> {
-        // We check free contigious space and return Error if there is no space for the caller to handle
-
-        let free_start = self.free_start();
-        let free_end = self.free_end();
-
-        if (cell.len() + ENTRY_SIZE) > free_end - free_start {
-            return Err(PageError::NoContigiousSpace);
-        }
-
-        let cell_start_offset = free_end - cell.len();
-
-        assert!(cell.len() <= u16::MAX as usize);
-        assert!(cell_start_offset <= u16::MAX as usize);
-
-        self.insert_slot_entry_at_index(
-            index,
-            SlotEntry::new(cell_start_offset as u16, cell.len() as u16),
-        )?;
-
-        // We now copy cell data into the free space
-        // SAFETY: We are copying from a valid slice to a valid memory location and not overlapping, we have checked
-        // the bounds of the free space and the cell data size is valid.
-        unsafe {
-            let cell_ptr = self.bytes.as_mut_ptr().add(cell_start_offset);
-            ptr::copy_nonoverlapping(cell.as_ptr(), cell_ptr, cell.len());
-        }
-
-        // IMPORTANT! Need to ensure we update free_end to reflect the change in page memory and free_space
-        self.set_free_end(cell_start_offset)?;
-
+    pub(super) fn insert_cell<F>(&mut self, cell: &[u8], f: F) -> Result<()>
+    where
+        F: FnOnce(&mut Self, SlotEntry) -> Result<()>,
+    {
+        let entry = self.alloc_cell(cell)?;
+        f(self, entry)?;
         Ok(())
     }
 
@@ -617,7 +611,7 @@ impl<'a> SlottedPageMut<'a> {
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count() as u16;
 
-        assert!(slot_index.0 < slot_count);
+        assert!(slot_index.0 <= slot_count);
 
         // Now we need to transfer the cells to the given page first to ensure this succeeds before we remove our own bytes
         // First we must validate the passed page is ready to receive the bytes - but we don't try to fix, we only want to make sure we are able to
@@ -629,7 +623,23 @@ impl<'a> SlottedPageMut<'a> {
                 println!("se {:?}", se);
                 println!();
                 println!("cell {:?}", cell);
-                continue;
+
+                // Invariants:
+                // - We know we have a blank page with 0 memory and do not need to make any more assumption, we can stay naive and work on bytes
+                // - We know that the slot array is ordered already and can be straight copied
+                // - We don't need to know about where we are in the tree or if we need a sibling pointer or high key, the page interpreter above will set these
+
+                // Maintaining slot ordering
+                // Current Page:
+                // [aaab, aaac, aaad, aaae, aaaf, aaag, aaah]
+                //                    ^ transfer from here
+                // Blank Page:
+                // []
+                // Append > [aaae]
+                // Append > [aaae, aaaf]
+                // Append > [aaae, aaaf, aaag]
+                // Append > [aaae, aaaf, aaag, aaah]
+                //
             }
         }
         Ok(())
@@ -969,11 +979,11 @@ mod tests {
 
         for i in 0..=entries_needed {
             if i == insert_test_at_index {
-                sp.add_cell_at_slot_entry_index(i, b"I am a test")?;
+                sp.insert_cell(b"I am a test", |s, entry| s.prepend_slot_entry(entry))?;
             } else {
                 let mut key = [1u8; 10];
                 key[9] = 2;
-                sp.add_cell_at_slot_entry_index(i, &key)?;
+                sp.insert_cell(&key, |s, entry| s.prepend_slot_entry(entry))?;
             }
         }
 
@@ -1102,7 +1112,7 @@ mod tests {
 
         let cell = "I am a cell".as_bytes();
 
-        match page.add_cell_append_slot_entry(cell) {
+        match page.alloc_cell(cell) {
             Ok(_) => match page.cell_slice_from_id(0) {
                 Ok(cell) => {
                     let string = str::from_utf8(cell).unwrap();
@@ -1124,7 +1134,7 @@ mod tests {
 
         let cell = "I am a cell".as_bytes();
 
-        page.add_cell_append_slot_entry(cell).ok().unwrap();
+        page.alloc_cell(cell).ok().unwrap();
 
         let want_memory_usage = cell.len() + 4;
 
@@ -1218,7 +1228,7 @@ mod tests {
         println!("page 2 memory {:?}", sp2.memory_used_non_frag());
 
         // Now we want to call transfer - we should be ok as the page2 is empty
-        let result = sp.transfer(SlotID(190), &mut sp2);
+        let result = sp.transfer(SlotID(140), &mut sp2);
         // match result {
         //     Ok(_) => {
         //         println!("Transfer successful");

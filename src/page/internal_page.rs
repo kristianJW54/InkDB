@@ -135,7 +135,7 @@ impl<'page> IndexPageMut<'page> {
     pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes
         let bytes = cell.0.as_ref();
-        self.page.add_cell_append_slot_entry(bytes)?;
+        self.page.alloc_cell(bytes)?;
         Ok(())
     }
 
@@ -146,7 +146,8 @@ impl<'page> IndexPageMut<'page> {
     ) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes in the RawPage
         let bytes = cell.deref();
-        self.page.add_cell_at_slot_entry_index(index, bytes)?;
+        self.page
+            .insert_cell(bytes, |s, entry| s.insert_slot_entry_at_index(index, entry))?;
         Ok(())
     }
 }
