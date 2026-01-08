@@ -69,6 +69,7 @@ pub(crate) enum PageError {
     NotEnoughFreeSpace,
     InvalidFreeEnd,
     InvalidFreeStart,
+    TransferError,
 }
 
 #[derive(Debug)]
@@ -600,7 +601,7 @@ impl<'a> SlottedPageMut<'a> {
         let offset = se.offset as usize;
         let length = se.length as usize;
 
-        debug_assert!(offset + length < PAGE_SIZE);
+        debug_assert!(offset + length <= PAGE_SIZE);
 
         let cell = self.bytes[offset..offset + length].as_ref();
         cell
@@ -620,10 +621,6 @@ impl<'a> SlottedPageMut<'a> {
 
         for idx in slot_index.0..slot_count {
             if let Ok((se, cell)) = self.cell_and_entry_from_index(idx) {
-                println!("se {:?}", se);
-                println!();
-                println!("cell {:?}", cell);
-
                 // Invariants:
                 // - We know we have a blank page with 0 memory and do not need to make any more assumption, we can stay naive and work on bytes
                 // - We know that the slot array is ordered already and can be straight copied
@@ -640,6 +637,10 @@ impl<'a> SlottedPageMut<'a> {
                 // Append > [aaae, aaaf, aaag]
                 // Append > [aaae, aaaf, aaag, aaah]
                 //
+
+                page.insert_cell(cell, |s, entry| s.append_slot_entry(entry))?;
+            } else {
+                return Err(PageError::TransferError);
             }
         }
         Ok(())
@@ -979,7 +980,7 @@ mod tests {
 
         for i in 0..=entries_needed {
             if i == insert_test_at_index {
-                sp.insert_cell(b"I am a test", |s, entry| s.prepend_slot_entry(entry))?;
+                sp.insert_cell(b"test  test", |s, entry| s.prepend_slot_entry(entry))?;
             } else {
                 let mut key = [1u8; 10];
                 key[9] = 2;
@@ -1198,7 +1199,7 @@ mod tests {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
                 let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
-                assert_eq!(str, "I am a test");
+                assert_eq!(str, "test test");
             }
             Err(e) => {
                 panic!("Error creating half-full page: {:?}", e);
@@ -1210,7 +1211,7 @@ mod tests {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
                 let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(30)).ok().unwrap());
-                assert_eq!(str, "I am a test");
+                assert_eq!(str, "test  test");
             }
             Err(e) => {
                 panic!("Error creating half-full page: {:?}", e);
@@ -1220,22 +1221,30 @@ mod tests {
 
     #[test]
     fn transfer_page() {
+        // We are inserting test message at the beginning - half full page prepends so this means test messsage will stay at the end of the page
         let mut page = half_full_page(0).ok().unwrap();
         let mut sp = SlottedPageMut::from_bytes(&mut page);
         let mut page2: RawPage = [0u8; 4096];
         let mut sp2 = SlottedPageMut::init_new(&mut page2, 255);
 
-        println!("page 2 memory {:?}", sp2.memory_used_non_frag());
-
-        // Now we want to call transfer - we should be ok as the page2 is empty
-        let result = sp.transfer(SlotID(140), &mut sp2);
-        // match result {
-        //     Ok(_) => {
-        //         println!("Transfer successful");
-        //     }
-        //     Err(e) => {
-        //         println!("Transfer failed: {:?}", e);
-        //     }
-        // }
+        // Now we want to call transfer
+        // We are only transferring two items over to the new page - the test key will not be in the same space but the slot entry should maintain order
+        let result = sp.transfer(SlotID(144), &mut sp2);
+        match result {
+            Ok(_) => {
+                for (i, se) in sp2.slot_dir_ref().iter().enumerate() {
+                    // We assert memory usage
+                    assert_eq!(sp2.memory_used_non_frag(), 20 + 2 * ENTRY_SIZE);
+                    // We assert that the test key is the last in the iteration
+                    if i == 1 {
+                        let key = String::from_utf8_lossy(sp2.cell_slice_from_entry(se));
+                        assert_eq!(key, "test  test");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Transfer failed: {:?}", e);
+            }
+        }
     }
 }

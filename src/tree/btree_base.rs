@@ -57,6 +57,10 @@ pub(super) struct BInner<'blink> {
     tx: &'blink OpCtx,
 }
 
+// TODO:
+// - Need to implement an insert method which returns a Result enum of InsertResult which is either a Ok or Split - Can we use null pointer optimisation?
+// -
+
 impl<'blink> BInner<'blink> {
     pub fn new(tx: &'blink OpCtx) -> Self {
         Self { tx }
@@ -149,7 +153,6 @@ impl<'a> TraverseCtx<'a> {
 }
 
 // Need to have insertpath structure for paths - which we can pass to a traverse_with_path?
-// Need to have leafpos - basically slot entry for the leaf page this is only when we work inside the leaf page and should not be used outside of latch
 // Need to have cursor/scan - for horizontal movement - scan cursor should logically sit between pages so splits will not interrupt scans and we can continue
 
 #[cfg(test)]
