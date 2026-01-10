@@ -26,7 +26,7 @@ SLOTTED PAGE is dumb - it only knows how to make structural changes to the unive
 // -- Free_start: 2 bytes
 // -- Free_end  : 2 bytes
 // -- Special_start: 2 bytes
-// -- Size and Version: 2 bytes
+// -- Fragmented_space: 2 bytes
 // -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
 
 pub(crate) const PAGE_SIZE: usize = 4096;
@@ -48,9 +48,9 @@ const FREE_END_OFFSET: usize = FREE_START_OFFSET + FREE_START_SIZE;
 const FREE_END_SIZE: usize = 2;
 const SPECIAL_OFFSET: usize = FREE_END_OFFSET + FREE_END_SIZE;
 const SPECIAL_SIZE: usize = 2;
-const SIZE_VERSION_OFFSET: usize = SPECIAL_OFFSET + SPECIAL_SIZE;
-const SIZE_VERSION_SIZE: usize = 2;
-const TXID_OFFSET: usize = SIZE_VERSION_OFFSET + SIZE_VERSION_SIZE;
+const FRAG_OFFSET: usize = SPECIAL_OFFSET + SPECIAL_SIZE;
+const FRAG_SIZE: usize = 2;
+const TXID_OFFSET: usize = FRAG_OFFSET + FRAG_SIZE;
 const TXID_SIZE: usize = 4;
 
 pub(crate) const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
@@ -117,41 +117,6 @@ impl<'a> SlottedPageMut<'a> {
     pub(super) fn get_page_type(&self) -> u8 {
         self.bytes[PAGE_TYPE_OFFSET]
     }
-
-    #[inline(always)]
-    pub(super) fn free_contiguous_space(&self) -> usize {
-        self.free_end() - self.free_start()
-    }
-
-    #[inline]
-    pub(super) fn free_fragmented_space(&self) -> usize {
-        // NOTE: We must iterate slot entries and gather the length of entries which are deleted
-
-        0
-    }
-
-    #[inline]
-    pub(super) fn memory_used_non_frag(&self) -> usize {
-        let special_off = self.get_special_offset() as usize;
-
-        let payload_end = if special_off == 0 {
-            PAGE_SIZE
-        } else {
-            special_off
-        };
-
-        debug_assert!(payload_end >= HEADER_SIZE);
-        debug_assert!(payload_end <= PAGE_SIZE);
-
-        let payload_capacity = payload_end - HEADER_SIZE;
-        let free = self.free_contiguous_space();
-
-        debug_assert!(free <= payload_capacity);
-
-        payload_capacity - free
-    }
-
-    // TODO make a memory_used_frag method
 
     #[inline(always)]
     pub(super) fn free_start(&self) -> usize {
@@ -230,6 +195,76 @@ impl<'a> SlottedPageMut<'a> {
 
         Ok(())
     }
+
+    #[inline(always)]
+    pub(super) fn free_contiguous_space(&self) -> usize {
+        self.free_end() - self.free_start()
+    }
+
+    pub(super) fn get_fragmented_space(&mut self) -> usize {
+        unsafe {
+            let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
+            let frag = read_u16_le_unsafe(b_ptr);
+            frag as usize
+        }
+    }
+
+    pub(super) fn increase_fragmented_space(&mut self, amount: u16) {
+        let special_off = self.get_special_offset() as usize;
+
+        let payload_end = if special_off == 0 {
+            PAGE_SIZE - HEADER_SIZE
+        } else {
+            special_off - HEADER_SIZE
+        };
+
+        assert!(amount < payload_end as u16);
+
+        let frag = self.get_fragmented_space() as u16 + amount;
+
+        assert!(frag < payload_end as u16);
+
+        // SAFETY: We have exclusive access to raw page, we know amount is within bounds of page and desired increase is also within bounds so writing new
+        // offset is safe
+        unsafe {
+            let b_ptr = self.bytes.as_mut_ptr().add(FRAG_OFFSET);
+            write_u16_le_unsafe(b_ptr, frag);
+        }
+    }
+
+    #[inline]
+    pub(super) fn free_fragmented_space(&self) -> usize {
+        // Because we store fragmented space in header we can simply fetch and return it
+
+        // SAFETY: We have exclusive access to raw page, we know that fragmented space is within bounds of page so reading it is safe
+        unsafe {
+            let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
+            read_u16_le_unsafe(b_ptr) as usize
+        }
+    }
+
+    #[inline]
+    pub(super) fn memory_used_non_frag(&self) -> usize {
+        let special_off = self.get_special_offset() as usize;
+
+        let payload_end = if special_off == 0 {
+            PAGE_SIZE
+        } else {
+            special_off
+        };
+
+        debug_assert!(payload_end >= HEADER_SIZE);
+        debug_assert!(payload_end <= PAGE_SIZE);
+
+        let payload_capacity = payload_end - HEADER_SIZE;
+        let free = self.free_contiguous_space();
+
+        debug_assert!(free <= payload_capacity);
+
+        payload_capacity - free
+    }
+
+    // TODO make a memory_used_frag method
 
     #[inline(always)]
     pub(super) fn get_special_offset(&self) -> u16 {
@@ -390,6 +425,10 @@ impl<'a> SlottedPageMut<'a> {
             Ok(())
         }
     }
+
+    // When we remove slot entries, we must remember that we are saying that the cell bytes they point to are now free but fragmented. They are no longer
+    // part a of the page, physically and contiguously they exist, but implicity they do not. So when we try to insert new cells, if we do not have enough contiguous space,
+    // we must check fragmented (non addressable) space if we can compact and insert there.
 
     pub(super) fn remove_slot_index_range(&mut self, range: Range<usize>) -> Result<()> {
         let slot_count = self.slot_dir_ref().slot_count();
@@ -639,12 +678,24 @@ impl<'a> SlottedPageMut<'a> {
                 //
 
                 page.insert_cell(cell, |s, entry| s.append_slot_entry(entry))?;
+
+                // If we successfully move the cell to new page, we need to remove the slot entry from current page and by doing this we
+                // effectively remove the cell from the current page
+                // If we error during iteration we can return the SlotEntry or Index of where we errored for any future retries
+
+                // remove slot method adjusts the free start for us so we don't need to do anything else
+                self.remove_slot_index_range((slot_index.0 as usize)..(slot_count as usize))?;
+                // Increment fragment count here?
             } else {
                 return Err(PageError::TransferError);
             }
         }
+
         Ok(())
     }
+
+    // TODO --------------------------------
+    // Compact Methods here
 }
 
 #[derive(Debug)]

@@ -44,4 +44,8 @@ TODO
 
 // Need to think about Comparitors for the b-tree and how we do that
 
-// Need to implement a Transfer_and_compact method which can take easy optimisations for compaction on the transferring page?
+// Need to make compact methods
+// Need to make insert method which checks contiguous space then fragmented and compacts if needed or return split error/ctx
+// Need to make a split plan method which returns a split plan for us to use
+// Need to make page specific split methods which carry out a split plan and apply page specifics to a split returning ctx to the tree
+// Need to also include an increment fragment count to where we do split and transfer
