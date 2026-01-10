@@ -201,7 +201,7 @@ impl<'a> SlottedPageMut<'a> {
         self.free_end() - self.free_start()
     }
 
-    pub(super) fn get_fragmented_space(&mut self) -> usize {
+    pub(super) fn get_fragmented_space(&self) -> usize {
         unsafe {
             let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
             let frag = read_u16_le_unsafe(b_ptr);
@@ -264,7 +264,32 @@ impl<'a> SlottedPageMut<'a> {
         payload_capacity - free
     }
 
-    // TODO make a memory_used_frag method
+    #[inline]
+    pub(super) fn memory_used(&self) -> usize {
+        let special_off = self.get_special_offset() as usize;
+        let payload_end = if special_off == 0 {
+            PAGE_SIZE
+        } else {
+            special_off
+        };
+
+        debug_assert!(payload_end >= HEADER_SIZE);
+        debug_assert!(payload_end <= PAGE_SIZE);
+
+        let payload_capacity = payload_end - HEADER_SIZE;
+        let space = self.free_contiguous_space() + self.get_fragmented_space();
+
+        debug_assert!(space <= payload_capacity);
+
+        payload_capacity - space
+    }
+
+    #[inline(always)]
+    pub(super) fn get_slot_count(&self) -> usize {
+        let fs = self.free_start();
+        debug_assert!(fs >= HEADER_SIZE);
+        (fs - HEADER_SIZE) / ENTRY_SIZE
+    }
 
     #[inline(always)]
     pub(super) fn get_special_offset(&self) -> u16 {
@@ -696,6 +721,24 @@ impl<'a> SlottedPageMut<'a> {
 
     // TODO --------------------------------
     // Compact Methods here
+
+    fn compact(&mut self) -> Result<()> {
+        // First create a scratch buffer that we will memcpy once done
+        let mut scratch: RawPage = [0u8; PAGE_SIZE];
+        let mut sp = SlottedPageMut::init_new(&mut scratch, self.get_page_type());
+
+        let slot_count = self.get_slot_count();
+
+        // The objective is to loop through the slot directory - copy over cells (use transfer?)
+        // If any special space we should copy this over also
+        // And any header specifics we need [page type, flag bit, transaction id] - generate new checksum?
+
+        for i in 0..slot_count {
+            unimplemented!()
+        }
+
+        todo!("finish");
+    }
 }
 
 #[derive(Debug)]
