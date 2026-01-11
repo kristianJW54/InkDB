@@ -109,6 +109,54 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
+    pub(super) fn get_tx_id(&self) -> u64 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(TXID_OFFSET);
+            read_u64_le_unsafe(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn set_tx_id(&mut self, tx_id: u64) {
+        unsafe {
+            let ptr = self.bytes.as_mut_ptr().add(TXID_OFFSET);
+            write_u64_le_unsafe(ptr, tx_id);
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn get_lsn(&self) -> u64 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(LSN_OFFSET);
+            read_u64_le_unsafe(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn set_lsn(&mut self, lsn: u64) {
+        unsafe {
+            let ptr = self.bytes.as_mut_ptr().add(LSN_OFFSET);
+            write_u64_le_unsafe(ptr, lsn);
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn get_checksum(&self) -> u16 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(CHECKSUM_OFFSET);
+            read_u16_le_unsafe(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn set_checksum(&mut self, checksum: u16) {
+        unsafe {
+            let ptr = self.bytes.as_mut_ptr().add(CHECKSUM_OFFSET);
+            write_u16_le_unsafe(ptr, checksum);
+        }
+    }
+
+    #[inline(always)]
     pub(super) fn set_page_type(&mut self, page_type: u8) {
         self.bytes[PAGE_TYPE_OFFSET] = page_type;
     }
@@ -181,7 +229,9 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(super) fn set_free_end(&mut self, offset: usize) -> Result<()> {
+    pub(super) fn set_free_end(&mut self, offset: u16) -> Result<()> {
+        let offset = offset as usize;
+
         debug_assert!(offset >= HEADER_SIZE);
 
         if offset < self.free_start() || offset < HEADER_SIZE {
@@ -311,14 +361,6 @@ impl<'a> SlottedPageMut<'a> {
     #[inline]
     pub(super) fn set_flags(&mut self, flags: u8) {
         self.bytes[FLAGS_OFFSET] = flags;
-    }
-
-    #[inline(always)]
-    pub(super) fn set_lsn(&mut self, lsn: u64) {
-        unsafe {
-            let b_ptr = self.bytes.as_mut_ptr().add(LSN_OFFSET);
-            write_u64_le_unsafe(b_ptr, lsn);
-        }
     }
 
     pub(super) fn slot_dir_ref(&self) -> SlotRef<'_> {
@@ -555,20 +597,20 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::NoContigiousSpace);
         }
 
-        let cell_start_offset = free_end - cell.len();
+        let cell_start_offset = (free_end - cell.len()) as u16;
 
         assert!(cell.len() <= u16::MAX as usize);
-        assert!(cell_start_offset <= u16::MAX as usize);
+        assert!(cell_start_offset <= u16::MAX);
 
         let entry = SlotEntry {
-            offset: cell_start_offset as u16,
+            offset: cell_start_offset,
             length: cell.len() as u16,
         };
 
         // We now need to start from free_end and grow upwards by copying in the cell data
         // SAFETY: We are copying from a valid slice to a valid memory location and not overlapping
         unsafe {
-            let cell_ptr = self.bytes.as_mut_ptr().add(cell_start_offset);
+            let cell_ptr = self.bytes.as_mut_ptr().add(cell_start_offset as usize);
             ptr::copy_nonoverlapping(cell.as_ptr(), cell_ptr, cell.len());
         }
 
@@ -627,7 +669,7 @@ impl<'a> SlottedPageMut<'a> {
     pub(super) fn cell_and_entry_from_index(
         &self,
         slot_index: u16,
-    ) -> Result<(&'_ [u8], &'_ [u8])> {
+    ) -> Result<(SlotEntryRef, CellRef)> {
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count();
 
@@ -654,7 +696,7 @@ impl<'a> SlottedPageMut<'a> {
             let cell_ref = self.bytes[offset..offset + length].as_ref();
             let se_ref = self.bytes[index_offset..index_offset + ENTRY_SIZE].as_ref();
 
-            Ok((se_ref, cell_ref))
+            Ok((SlotEntryRef(se_ref), CellRef(cell_ref)))
         }
     }
 
@@ -702,7 +744,7 @@ impl<'a> SlottedPageMut<'a> {
                 // Append > [aaae, aaaf, aaag, aaah]
                 //
 
-                page.insert_cell(cell, |s, entry| s.append_slot_entry(entry))?;
+                page.insert_cell(cell.0, |s, entry| s.append_slot_entry(entry))?;
 
                 // If we successfully move the cell to new page, we need to remove the slot entry from current page and by doing this we
                 // effectively remove the cell from the current page
@@ -719,25 +761,38 @@ impl<'a> SlottedPageMut<'a> {
         Ok(())
     }
 
-    // TODO --------------------------------
-    // Compact Methods here
-
     fn compact(&mut self) -> Result<()> {
         // First create a scratch buffer that we will memcpy once done
         let mut scratch: RawPage = [0u8; PAGE_SIZE];
         let mut sp = SlottedPageMut::init_new(&mut scratch, self.get_page_type());
 
-        let slot_count = self.get_slot_count();
+        let slot_count = self.get_slot_count() as u16;
 
         // The objective is to loop through the slot directory - copy over cells (use transfer?)
         // If any special space we should copy this over also
         // And any header specifics we need [page type, flag bit, transaction id] - generate new checksum?
 
-        for i in 0..slot_count {
-            unimplemented!()
+        // Before copying over cells we need to make sure that if there is any special space we adjust the free_end first and copy over the special pointers
+        let special = self.get_special_offset();
+        if special > 0 {
+            sp.set_special_offset(special);
+            sp.set_free_end(special)?;
         }
 
-        todo!("finish");
+        for i in 0..slot_count {
+            if let Ok((se, cell)) = self.cell_and_entry_from_index(i) {
+                sp.insert_cell(cell.0, |s, entry| s.append_slot_entry(entry))?;
+                // Unlike transfer we don't really care about clearing up the current page since we will be swapping it out
+            }
+        }
+
+        // If we are here then we can assume that our page contents have been copied over so now we must do some housekeeping before swapping the memory
+        //
+        sp.set_lsn(self.get_lsn()); // New LSN for the log?
+        sp.set_checksum(self.get_checksum()); // Do we need to generate a new checksum?
+        sp.set_tx_id(self.get_tx_id());
+
+        todo!("finish"); // NEED TO TEST NOW
     }
 }
 
@@ -754,6 +809,30 @@ impl<'a> SlottedPageRef<'a> {
     // -----------------------
 
     // Header + Meta methods
+
+    #[inline(always)]
+    pub(super) fn get_tx_id(&self) -> u64 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(TXID_OFFSET);
+            read_u64_le_unsafe(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn get_lsn(&self) -> u64 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(LSN_OFFSET);
+            read_u64_le_unsafe(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub(super) fn get_checksum(&self) -> u16 {
+        unsafe {
+            let ptr = self.bytes.as_ptr().add(CHECKSUM_OFFSET);
+            read_u16_le_unsafe(ptr)
+        }
+    }
 
     #[inline(always)]
     pub(super) fn get_page_type(&self) -> u8 {
@@ -799,14 +878,6 @@ impl<'a> SlottedPageRef<'a> {
     #[inline(always)]
     pub(super) fn get_flags(&self) -> u8 {
         self.bytes[FLAGS_OFFSET]
-    }
-
-    #[inline(always)]
-    pub(super) fn get_lsn(&self) -> u64 {
-        unsafe {
-            let b_ptr = self.bytes.as_ptr().add(LSN_OFFSET);
-            read_u64_le_unsafe(b_ptr)
-        }
     }
 
     // Slot Dir Methods
@@ -877,7 +948,7 @@ impl<'a> SlottedPageRef<'a> {
     pub(super) fn cell_and_entry_from_index(
         &self,
         slot_index: u16,
-    ) -> Result<(&'_ [u8], &'_ [u8])> {
+    ) -> Result<(SlotEntryRef, CellRef)> {
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count();
 
@@ -904,7 +975,7 @@ impl<'a> SlottedPageRef<'a> {
             let cell_ref = self.bytes[offset..offset + length].as_ref();
             let se_ref = self.bytes[index_offset..index_offset + ENTRY_SIZE].as_ref();
 
-            Ok((se_ref, cell_ref))
+            Ok((SlotEntryRef(se_ref), CellRef(cell_ref)))
         }
     }
 
@@ -1050,6 +1121,9 @@ impl SlotEntry {
     }
 }
 
+pub(super) struct SlotEntryRef<'a>(&'a [u8]);
+pub(super) struct CellRef<'a>(&'a [u8]);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1108,7 +1182,7 @@ mod tests {
         let c_free_end = page.free_end();
         assert_eq!(c_free_end, PAGE_SIZE);
         let new_free_end = PAGE_SIZE - 10;
-        page.set_free_end(new_free_end);
+        page.set_free_end(new_free_end as u16);
         assert_eq!(page.free_end(), new_free_end);
 
         // TODO Finish testing ------------- it's boring but just do it
@@ -1225,7 +1299,9 @@ mod tests {
         let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
 
         page.set_special_offset(LSN_SIZE as u16);
-        page.set_free_end(PAGE_SIZE - LSN_SIZE).ok().unwrap();
+        page.set_free_end(PAGE_SIZE_U16 - LSN_SIZE as u16)
+            .ok()
+            .unwrap();
 
         let cell = "I am a cell".as_bytes();
 

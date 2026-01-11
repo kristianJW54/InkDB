@@ -2,6 +2,7 @@
 
 // We want to look at fences - look at prefix compression and look ahead
 
+use crate::page::slotted_page::PAGE_SIZE_U16;
 // Page types interpret over the slotted page for their type
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
@@ -82,8 +83,7 @@ impl<'page> IndexPageMut<'page> {
         self.page.set_free_start(HEADER_SIZE);
 
         // Adjust free_end for special offset
-        self.page
-            .set_free_end(PAGE_SIZE - INDEX_SPECIAL_SIZE as usize)?;
+        self.page.set_free_end(PAGE_SIZE_U16 - INDEX_SPECIAL_SIZE)?;
 
         // Set lsn
         self.page.set_lsn(lsn);
