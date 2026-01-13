@@ -3,10 +3,11 @@
 // wrapped and does not allow the page to be exposed outside of any page specific wrappers or if it is, we won't be able to do anything with it anyway.
 
 use crate::page::*;
+use std::f64::consts::PI;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut, Range};
-use std::ptr;
+use std::{ptr, slice};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
 
@@ -54,7 +55,7 @@ const TXID_OFFSET: usize = FRAG_OFFSET + FRAG_SIZE;
 const TXID_SIZE: usize = 4;
 
 pub(crate) const HEADER_SIZE: usize = TXID_OFFSET + TXID_SIZE;
-const HEADER_SIZE_U16: u16 = HEADER_SIZE as u16;
+pub(crate) const HEADER_SIZE_U16: u16 = HEADER_SIZE as u16;
 
 pub(crate) type Result<T> = std::result::Result<T, PageError>;
 
@@ -167,25 +168,25 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn free_start(&self) -> usize {
+    pub(super) fn free_start(&self) -> u16 {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_START_OFFSET);
-            read_u16_le_unsafe(ptr) as usize
+            read_u16_le_unsafe(ptr)
         }
     }
 
     #[inline(always)]
-    pub(super) fn free_end(&self) -> usize {
+    pub(super) fn free_end(&self) -> u16 {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
-            read_u16_le_unsafe(ptr) as usize
+            read_u16_le_unsafe(ptr)
         }
     }
 
     #[inline(always)]
-    pub(super) fn set_free_start(&mut self, offset: usize) {
-        debug_assert!(offset >= HEADER_SIZE);
-        debug_assert!(offset <= PAGE_SIZE);
+    pub(super) fn set_free_start(&mut self, offset: u16) {
+        debug_assert!(offset >= HEADER_SIZE_U16);
+        debug_assert!(offset <= PAGE_SIZE_U16);
 
         unsafe {
             let page_ptr = self.bytes.as_mut_ptr().add(FREE_START_OFFSET);
@@ -194,14 +195,14 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn increment_free_start(&mut self, bytes: usize) -> Result<usize> {
+    pub(super) fn increment_free_start(&mut self, bytes: u16) -> Result<u16> {
         let cur_fs = self.free_start();
         let new_fs = cur_fs + bytes;
 
         debug_assert!(new_fs <= self.free_end());
-        debug_assert!(new_fs >= HEADER_SIZE);
+        debug_assert!(new_fs >= HEADER_SIZE_U16);
 
-        if new_fs < HEADER_SIZE {
+        if new_fs < HEADER_SIZE_U16 {
             return Err(PageError::InvalidFreeStart);
         }
 
@@ -214,11 +215,11 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn decrement_free_start(&mut self, bytes: usize) -> Result<usize> {
-        let cur_fs = self.free_start();
+    pub(super) fn decrement_free_start(&mut self, bytes: u16) -> Result<u16> {
+        let cur_fs = self.free_start() as u16;
         let new_fs = cur_fs - bytes;
 
-        assert!(new_fs >= HEADER_SIZE);
+        assert!(new_fs >= HEADER_SIZE_U16);
 
         unsafe {
             let b_ptr = self.bytes.as_mut_ptr().add(FREE_START_OFFSET);
@@ -230,11 +231,11 @@ impl<'a> SlottedPageMut<'a> {
 
     #[inline]
     pub(super) fn set_free_end(&mut self, offset: u16) -> Result<()> {
-        let offset = offset as usize;
+        let offset = offset;
 
-        debug_assert!(offset >= HEADER_SIZE);
+        debug_assert!(offset >= HEADER_SIZE_U16);
 
-        if offset < self.free_start() || offset < HEADER_SIZE {
+        if offset < self.free_start() || offset < HEADER_SIZE_U16 {
             return Err(PageError::InvalidFreeEnd);
         }
 
@@ -247,15 +248,15 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn free_contiguous_space(&self) -> usize {
+    pub(super) fn free_contiguous_space(&self) -> u16 {
         self.free_end() - self.free_start()
     }
 
-    pub(super) fn get_fragmented_space(&self) -> usize {
+    pub(super) fn get_fragmented_space(&self) -> u16 {
         unsafe {
             let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
             let frag = read_u16_le_unsafe(b_ptr);
-            frag as usize
+            frag
         }
     }
 
@@ -294,19 +295,19 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(super) fn memory_used_non_frag(&self) -> usize {
-        let special_off = self.get_special_offset() as usize;
+    pub(super) fn memory_used_non_frag(&self) -> u16 {
+        let special_off = self.get_special_offset();
 
         let payload_end = if special_off == 0 {
-            PAGE_SIZE
+            PAGE_SIZE_U16
         } else {
             special_off
         };
 
-        debug_assert!(payload_end >= HEADER_SIZE);
-        debug_assert!(payload_end <= PAGE_SIZE);
+        debug_assert!(payload_end >= HEADER_SIZE_U16);
+        debug_assert!(payload_end <= PAGE_SIZE_U16);
 
-        let payload_capacity = payload_end - HEADER_SIZE;
+        let payload_capacity = payload_end - HEADER_SIZE_U16;
         let free = self.free_contiguous_space();
 
         debug_assert!(free <= payload_capacity);
@@ -315,18 +316,18 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(super) fn memory_used(&self) -> usize {
-        let special_off = self.get_special_offset() as usize;
+    pub(super) fn memory_used(&self) -> u16 {
+        let special_off = self.get_special_offset();
         let payload_end = if special_off == 0 {
-            PAGE_SIZE
+            PAGE_SIZE_U16
         } else {
             special_off
         };
 
-        debug_assert!(payload_end >= HEADER_SIZE);
-        debug_assert!(payload_end <= PAGE_SIZE);
+        debug_assert!(payload_end >= HEADER_SIZE_U16);
+        debug_assert!(payload_end <= PAGE_SIZE_U16);
 
-        let payload_capacity = payload_end - HEADER_SIZE;
+        let payload_capacity = payload_end - HEADER_SIZE_U16;
         let space = self.free_contiguous_space() + self.get_fragmented_space();
 
         debug_assert!(space <= payload_capacity);
@@ -335,10 +336,10 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn get_slot_count(&self) -> usize {
+    pub(super) fn get_slot_count(&self) -> u16 {
         let fs = self.free_start();
-        debug_assert!(fs >= HEADER_SIZE);
-        (fs - HEADER_SIZE) / ENTRY_SIZE
+        debug_assert!(fs >= HEADER_SIZE_U16);
+        (fs - HEADER_SIZE_U16) / ENTRY_SIZE_U16
     }
 
     #[inline(always)]
@@ -364,13 +365,13 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     pub(super) fn slot_dir_ref(&self) -> SlotRef<'_> {
-        let fs = self.free_start();
-        assert!(fs >= HEADER_SIZE);
+        let fs = self.free_start() as u16;
+        assert!(fs >= HEADER_SIZE_U16);
         //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
         // page which indexing into the bytes of the page returning the offset which is correct and in bounds
         let sd_ptr = unsafe { self.bytes.as_ptr().add(HEADER_SIZE) };
 
-        SlotRef::new(sd_ptr, fs - HEADER_SIZE)
+        SlotRef::new(sd_ptr, fs - HEADER_SIZE_U16)
     }
 
     //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
@@ -380,18 +381,18 @@ impl<'a> SlottedPageMut<'a> {
         let fs = self.free_start();
         let end = self.free_end();
 
-        if end - fs < ENTRY_SIZE {
+        if end - fs < ENTRY_SIZE_U16 {
             return Err(PageError::NotEnoughFreeSpace);
         }
 
-        debug_assert!(fs + ENTRY_SIZE <= PAGE_SIZE);
+        debug_assert!(fs + ENTRY_SIZE_U16 <= PAGE_SIZE_U16);
 
         //SAFETY: We know we have valid page space of [u8;4096] this will not fail. However, it is up to the caller
         // for page interpretation and correctness that the space we write is valid free space
         //SAFETY: We call this in a mut self method meaning we have exclusive access to the page
         unsafe {
             // Get pointer to the start of free space
-            let ptr = self.bytes.as_mut_ptr().add(fs);
+            let ptr = self.bytes.as_mut_ptr().add(fs as usize);
 
             let offset_bytes = entry.offset.to_le_bytes();
             let length_bytes = entry.length.to_le_bytes();
@@ -399,16 +400,12 @@ impl<'a> SlottedPageMut<'a> {
             ptr::copy_nonoverlapping(offset_bytes.as_ptr(), ptr, 2);
             ptr::copy_nonoverlapping(length_bytes.as_ptr(), ptr.add(2), 2);
         }
-        self.increment_free_start(ENTRY_SIZE)?;
+        self.increment_free_start(ENTRY_SIZE_U16)?;
         Ok(())
     }
 
     // TODO insert_slot_entry_at_index() method
-    pub(super) fn insert_slot_entry_at_index(
-        &mut self,
-        idx: usize,
-        entry: SlotEntry,
-    ) -> Result<()> {
+    pub(super) fn insert_slot_entry_at_index(&mut self, idx: u16, entry: SlotEntry) -> Result<()> {
         // we need to first allocate a slot entry size at the start of free space and get the number of slots
         // then we take the slot entries and shift them along by slot_entry_size[4]
         // finally we need to add the slot entry to the start of the slot_dir at HEADER_SIZE
@@ -416,11 +413,11 @@ impl<'a> SlottedPageMut<'a> {
         let old_fs = self.free_start();
         let end = self.free_end();
 
-        if end - old_fs < ENTRY_SIZE {
+        if end - old_fs < ENTRY_SIZE_U16 {
             return Err(PageError::NotEnoughFreeSpace);
         }
 
-        let slot_count = (old_fs - HEADER_SIZE) / ENTRY_SIZE;
+        let slot_count = (old_fs - HEADER_SIZE_U16) / ENTRY_SIZE_U16;
 
         if idx > slot_count {
             return Err(PageError::SlotIndexNotInRange);
@@ -430,7 +427,7 @@ impl<'a> SlottedPageMut<'a> {
             return self.append_slot_entry(entry);
         }
 
-        let index_offset = HEADER_SIZE + (idx * ENTRY_SIZE);
+        let index_offset = (HEADER_SIZE_U16 + (idx * ENTRY_SIZE_U16)) as usize;
 
         // TODO add safety
         unsafe {
@@ -439,7 +436,7 @@ impl<'a> SlottedPageMut<'a> {
             ptr::copy(
                 b_ptr.add(index_offset),
                 b_ptr.add(index_offset + ENTRY_SIZE),
-                (slot_count - idx) * ENTRY_SIZE,
+                (slot_count - idx) as usize * ENTRY_SIZE,
             );
 
             // Now we need to copy in the slot entry
@@ -450,7 +447,7 @@ impl<'a> SlottedPageMut<'a> {
             ptr::copy_nonoverlapping(offset.as_ptr(), b_ptr.add(index_offset), 2);
             ptr::copy_nonoverlapping(length.as_ptr(), b_ptr.add(index_offset + 2), 2);
 
-            self.increment_free_start(ENTRY_SIZE)?;
+            self.increment_free_start(ENTRY_SIZE_U16)?;
 
             Ok(())
         }
@@ -460,12 +457,12 @@ impl<'a> SlottedPageMut<'a> {
         let fs = self.free_start();
         let end = self.free_end();
 
-        if end - fs < ENTRY_SIZE {
+        if end - fs < ENTRY_SIZE_U16 {
             return Err(PageError::NotEnoughFreeSpace);
         }
 
-        debug_assert!(fs + ENTRY_SIZE <= PAGE_SIZE);
-        debug_assert!(fs >= HEADER_SIZE);
+        debug_assert!(fs + ENTRY_SIZE_U16 <= PAGE_SIZE_U16);
+        debug_assert!(fs >= HEADER_SIZE_U16);
 
         // SAFETY: We have checked that there is enough free space for at least one entry slot. The caller should have already inserted the cell
         // We can safely add the entry to the beginning of the slot array after allocating entry space in the array.
@@ -476,7 +473,7 @@ impl<'a> SlottedPageMut<'a> {
             ptr::copy(
                 b_ptr.add(HEADER_SIZE),
                 b_ptr.add(HEADER_SIZE + ENTRY_SIZE),
-                fs - HEADER_SIZE,
+                (fs - HEADER_SIZE_U16) as usize,
             );
 
             // Get the entry bytes
@@ -487,7 +484,7 @@ impl<'a> SlottedPageMut<'a> {
             ptr::copy(offset_bytes.as_ptr(), b_ptr.add(HEADER_SIZE), 2);
             ptr::copy(length_bytes.as_ptr(), b_ptr.add(HEADER_SIZE + 2), 2);
 
-            self.increment_free_start(ENTRY_SIZE)?;
+            self.increment_free_start(ENTRY_SIZE_U16)?;
 
             Ok(())
         }
@@ -497,7 +494,34 @@ impl<'a> SlottedPageMut<'a> {
     // part a of the page, physically and contiguously they exist, but implicity they do not. So when we try to insert new cells, if we do not have enough contiguous space,
     // we must check fragmented (non addressable) space if we can compact and insert there.
 
-    pub(super) fn remove_slot_index_range(&mut self, range: Range<usize>) -> Result<()> {
+    pub(super) fn remove_slot_index_range<F>(&mut self, range: Range<u16>, mut f: F) -> Result<()>
+    where
+        // We will go into a loop - and give the caller a closure to operate inside the loop with a slot_entry and cell_bytes
+        F: FnMut(&Self, SlotEntryRef, CellRef) -> Result<()>,
+    {
+        let slot_count = self.slot_dir_ref().slot_count();
+        let fs = self.free_start() as isize;
+        assert!(range.start < range.end);
+        assert!(range.end <= slot_count);
+
+        // We make a frag variable to count the bytes as they are freed
+        let mut frag = 0;
+
+        // Once we've made our assertions we can iterate over the range
+        for i in range.start..range.end {
+            let (se, cell) = self.cell_and_entry_from_index(i)?;
+            let (_, length) = se.0.split_at(2);
+            frag += read_u16_le(length);
+            f(self, se, cell)?;
+        }
+
+        self.increase_fragmented_space(frag);
+
+        self.remove_slot_array_physical(range)?;
+        Ok(())
+    }
+
+    fn remove_slot_array_physical(&mut self, range: Range<u16>) -> Result<()> {
         let slot_count = self.slot_dir_ref().slot_count();
         let fs = self.free_start() as isize;
         assert!(range.start < range.end);
@@ -508,20 +532,20 @@ impl<'a> SlottedPageMut<'a> {
         // How many slots are at the tail after the range
         let tail = slot_count - range.end;
 
-        // What is the size of the removed bytes
-        let removed_bytes = removed * ENTRY_SIZE;
+        // What is the size of the removed bytes - we will use this to increment the fragment size
+        let removed_bytes = removed * ENTRY_SIZE_U16;
         // What is the size of the bytes that need to be shifted
-        let shift_size = tail * ENTRY_SIZE;
+        let shift_size = tail * ENTRY_SIZE_U16;
 
         // We need to get the destination offset of where we want to shift the tail bytes to after the removed bytes
-        let dst_offset = range.start * ENTRY_SIZE;
+        let dst_offset = range.start * ENTRY_SIZE_U16;
         // What is the source destination offset of the tail bytes that need to be shifted
-        let src_offset = range.end * ENTRY_SIZE;
+        let src_offset = range.end * ENTRY_SIZE_U16;
 
         // Get the header size as isize
         let header_size = HEADER_SIZE as isize;
 
-        let end_of_shifted = (dst_offset + shift_size) + HEADER_SIZE;
+        let end_of_shifted = (dst_offset + shift_size) + HEADER_SIZE_U16;
 
         // TODO ADD SAFETY
         unsafe {
@@ -536,7 +560,7 @@ impl<'a> SlottedPageMut<'a> {
                 ptr::copy(
                     b_ptr.offset(header_size + src_offset as isize),
                     b_ptr.offset(header_size + dst_offset as isize),
-                    shift_size,
+                    shift_size as usize,
                 );
             }
 
@@ -545,7 +569,7 @@ impl<'a> SlottedPageMut<'a> {
             ptr::write_bytes(
                 b_ptr.offset(header_size + end_of_shifted as isize),
                 0,
-                shift_size,
+                shift_size as usize,
             )
         }
 
@@ -556,7 +580,7 @@ impl<'a> SlottedPageMut<'a> {
                 if fs != end_of_shifted {
                     Err(PageError::InvalidFreeStart)
                 } else {
-                    Ok(())
+                    return Ok(());
                 }
             }
             Err(e) => Err(e),
@@ -593,11 +617,11 @@ impl<'a> SlottedPageMut<'a> {
         let free_start = self.free_start();
         let free_end = self.free_end();
 
-        if (cell.len() + ENTRY_SIZE) > free_end - free_start {
+        if (cell.len() + ENTRY_SIZE) > (free_end - free_start) as usize {
             return Err(PageError::NoContigiousSpace);
         }
 
-        let cell_start_offset = (free_end - cell.len()) as u16;
+        let cell_start_offset = free_end - cell.len() as u16;
 
         assert!(cell.len() <= u16::MAX as usize);
         assert!(cell_start_offset <= u16::MAX);
@@ -640,18 +664,18 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::EmptySlotDir);
         }
 
-        let idx = slot_id as usize;
+        let idx = slot_id;
 
         if idx >= slot_count {
             return Err(PageError::SlotIDOutOfBounds);
         }
 
-        let index_offset = idx * ENTRY_SIZE;
+        let index_offset = idx * ENTRY_SIZE_U16;
 
         // TODO Add safety notes and also debug asserts
 
         unsafe {
-            let base = slot_dir.ptr.add(index_offset);
+            let base = slot_dir.ptr.add(index_offset as usize);
 
             let offset = read_u16_le_unsafe(base) as usize;
             let length = read_u16_le_unsafe(base.add(2)) as usize;
@@ -671,7 +695,7 @@ impl<'a> SlottedPageMut<'a> {
         slot_index: u16,
     ) -> Result<(SlotEntryRef, CellRef)> {
         let slot_dir = self.slot_dir_ref();
-        let slot_count = slot_dir.slot_count();
+        let slot_count = slot_dir.slot_count() as usize;
 
         let idx = slot_index as usize;
 
@@ -725,47 +749,38 @@ impl<'a> SlottedPageMut<'a> {
         // do our job
         assert_eq!(page.memory_used_non_frag(), 0);
 
-        for idx in slot_index.0..slot_count {
-            if let Ok((se, cell)) = self.cell_and_entry_from_index(idx) {
-                // Invariants:
-                // - We know we have a blank page with 0 memory and do not need to make any more assumption, we can stay naive and work on bytes
-                // - We know that the slot array is ordered already and can be straight copied
-                // - We don't need to know about where we are in the tree or if we need a sibling pointer or high key, the page interpreter above will set these
+        self.remove_slot_index_range(slot_index.0..slot_count, |s, se, cell| {
+            // Invariants:
+            // - We know we have a blank page with 0 memory and do not need to make any more assumption, we can stay naive and work on bytes
+            // - We know that the slot array is ordered already and can be straight copied
+            // - We don't need to know about where we are in the tree or if we need a sibling pointer or high key, the page interpreter above will set these
 
-                // Maintaining slot ordering
-                // Current Page:
-                // [aaab, aaac, aaad, aaae, aaaf, aaag, aaah]
-                //                    ^ transfer from here
-                // Blank Page:
-                // []
-                // Append > [aaae]
-                // Append > [aaae, aaaf]
-                // Append > [aaae, aaaf, aaag]
-                // Append > [aaae, aaaf, aaag, aaah]
-                //
+            // Maintaining slot ordering
+            // Current Page:
+            // [aaab, aaac, aaad, aaae, aaaf, aaag, aaah]
+            //                    ^ transfer from here
+            // Blank Page:
+            // []
+            // Append > [aaae]
+            // Append > [aaae, aaaf]
+            // Append > [aaae, aaaf, aaag]
+            // Append > [aaae, aaaf, aaag, aaah]
+            //
 
-                page.insert_cell(cell.0, |s, entry| s.append_slot_entry(entry))?;
+            page.insert_cell(cell.0, |s, entry| s.append_slot_entry(entry))?;
 
-                // If we successfully move the cell to new page, we need to remove the slot entry from current page and by doing this we
-                // effectively remove the cell from the current page
-                // If we error during iteration we can return the SlotEntry or Index of where we errored for any future retries
-
-                // remove slot method adjusts the free start for us so we don't need to do anything else
-                self.remove_slot_index_range((slot_index.0 as usize)..(slot_count as usize))?;
-                // Increment fragment count here?
-            } else {
-                return Err(PageError::TransferError);
-            }
-        }
-
-        Ok(())
+            // If we successfully move the cell to new page, we need to remove the slot entry from current page and by doing this we
+            // effectively remove the cell from the current page
+            // If we error during iteration we can return the SlotEntry or Index of where we errored for any future retries
+            Ok(())
+        })?;
+        return Ok(());
     }
 
-    fn compact(&mut self) -> Result<()> {
+    fn compact(&mut self) -> Result<RawPage> {
         // First create a scratch buffer that we will memcpy once done
         let mut scratch: RawPage = [0u8; PAGE_SIZE];
         let mut sp = SlottedPageMut::init_new(&mut scratch, self.get_page_type());
-
         let slot_count = self.get_slot_count() as u16;
 
         // The objective is to loop through the slot directory - copy over cells (use transfer?)
@@ -787,12 +802,17 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         // If we are here then we can assume that our page contents have been copied over so now we must do some housekeeping before swapping the memory
-        //
-        sp.set_lsn(self.get_lsn()); // New LSN for the log?
-        sp.set_checksum(self.get_checksum()); // Do we need to generate a new checksum?
-        sp.set_tx_id(self.get_tx_id());
+        // - Do we need to generate a new checksum? LSN?
 
-        todo!("finish"); // NEED TO TEST NOW
+        // Now we want to swap the memory
+        // SAFETY: We have exclusive access to the current page - we know that the bytes are valid and of the same size and type so can be swapped
+        unsafe {
+            let src_ptr = sp.bytes.as_ptr(); // scratch (compacted)
+            let dst_ptr = self.bytes.as_mut_ptr(); // self (frame)
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE);
+        }
+
+        Ok(scratch)
     }
 }
 
@@ -840,31 +860,84 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn free_start(&self) -> usize {
+    pub(super) fn free_start(&self) -> u16 {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_START_OFFSET);
-            read_u16_le_unsafe(ptr) as usize
+            read_u16_le_unsafe(ptr)
         }
     }
 
     #[inline(always)]
-    pub(super) fn free_end(&self) -> usize {
+    pub(super) fn free_end(&self) -> u16 {
         unsafe {
             let ptr = self.bytes.as_ptr().add(FREE_END_OFFSET);
-            read_u16_le_unsafe(ptr) as usize
+            read_u16_le_unsafe(ptr)
         }
     }
 
     #[inline(always)]
-    pub(super) fn free_contiguous_space(&self) -> usize {
+    pub(super) fn free_contiguous_space(&self) -> u16 {
         self.free_end() - self.free_start()
+    }
+
+    pub(super) fn get_fragmented_space(&self) -> u16 {
+        unsafe {
+            let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
+            let frag = read_u16_le_unsafe(b_ptr);
+            frag
+        }
     }
 
     #[inline]
     pub(super) fn free_fragmented_space(&self) -> usize {
-        // NOTE: We must iterate slot entries and gather the length of entries which are deleted
+        // Because we store fragmented space in header we can simply fetch and return it
 
-        0
+        // SAFETY: We have exclusive access to raw page, we know that fragmented space is within bounds of page so reading it is safe
+        unsafe {
+            let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
+            read_u16_le_unsafe(b_ptr) as usize
+        }
+    }
+
+    #[inline]
+    pub(super) fn memory_used_non_frag(&self) -> u16 {
+        let special_off = self.get_special_offset();
+
+        let payload_end = if special_off == 0 {
+            PAGE_SIZE_U16
+        } else {
+            special_off
+        };
+
+        debug_assert!(payload_end >= HEADER_SIZE_U16);
+        debug_assert!(payload_end <= PAGE_SIZE_U16);
+
+        let payload_capacity = payload_end - HEADER_SIZE_U16;
+        let free = self.free_contiguous_space();
+
+        debug_assert!(free <= payload_capacity);
+
+        payload_capacity - free
+    }
+
+    #[inline]
+    pub(super) fn memory_used(&self) -> u16 {
+        let special_off = self.get_special_offset();
+        let payload_end = if special_off == 0 {
+            PAGE_SIZE_U16
+        } else {
+            special_off
+        };
+
+        debug_assert!(payload_end >= HEADER_SIZE_U16);
+        debug_assert!(payload_end <= PAGE_SIZE_U16);
+
+        let payload_capacity = payload_end - HEADER_SIZE_U16;
+        let space = self.free_contiguous_space() + self.get_fragmented_space();
+
+        debug_assert!(space <= payload_capacity);
+
+        payload_capacity - space
     }
 
     #[inline(always)]
@@ -883,13 +956,13 @@ impl<'a> SlottedPageRef<'a> {
     // Slot Dir Methods
 
     pub(super) fn slot_dir_ref(&self) -> SlotRef<'_> {
-        let fs = self.free_start();
-        assert!(fs >= HEADER_SIZE);
+        let fs = self.free_start() as u16;
+        assert!(fs >= HEADER_SIZE_U16);
         //SAFETY: This is safe because in order to get the fs_ptr we call the free_start() method on this
         // page which indexing into the bytes of the page returning the offset which is correct and in bounds
         let sd_ptr = unsafe { self.bytes.as_ptr().add(HEADER_SIZE) };
 
-        SlotRef::new(sd_ptr, fs - HEADER_SIZE)
+        SlotRef::new(sd_ptr, fs - HEADER_SIZE_U16)
     }
 
     // Cell Methods
@@ -900,7 +973,7 @@ impl<'a> SlottedPageRef<'a> {
         // it is up to the type layers who request the bytes to parse and process.
 
         let slot_dir = self.slot_dir_ref();
-        let slot_count = slot_dir.slot_count();
+        let slot_count = slot_dir.slot_count() as usize;
         if slot_count == 0 {
             return Err(PageError::EmptySlotDir);
         }
@@ -950,7 +1023,7 @@ impl<'a> SlottedPageRef<'a> {
         slot_index: u16,
     ) -> Result<(SlotEntryRef, CellRef)> {
         let slot_dir = self.slot_dir_ref();
-        let slot_count = slot_dir.slot_count();
+        let slot_count = slot_dir.slot_count() as usize;
 
         let idx = slot_index as usize;
 
@@ -1012,7 +1085,7 @@ impl<'a> SlottedPageRef<'a> {
 #[derive(Debug)]
 pub(super) struct SlotRef<'a> {
     ptr: *const u8, // Ptr to the start of the slot_dir
-    size: usize,
+    size: u16,
     _marker: PhantomData<&'a u8>, // For lifetime
 }
 
@@ -1020,7 +1093,7 @@ pub(super) struct SlotRef<'a> {
 
 impl<'a> SlotRef<'a> {
     // This isn't unsafe yet because we are only storing a raw const pointer and not aliasing or dereferencing
-    pub(super) fn new(start: *const u8, size: usize) -> Self {
+    pub(super) fn new(start: *const u8, size: u16) -> Self {
         Self {
             ptr: start,
             size,
@@ -1028,11 +1101,11 @@ impl<'a> SlotRef<'a> {
         }
     }
 
-    pub(super) fn slot_count(&self) -> usize {
+    pub(super) fn slot_count(&self) -> u16 {
         if self.size == 0 {
             return 0;
         }
-        self.size / size_of::<SlotEntry>()
+        self.size / size_of::<SlotEntry>() as u16
     }
 
     pub(super) fn iter(&self) -> SlotDirIter<'a> {
@@ -1058,13 +1131,13 @@ impl<'a> SlotDirMut<'a> {
 
 pub(super) struct SlotDirIter<'a> {
     ptr: *const u8,
-    size: usize,
-    pos: usize,
+    size: u16,
+    pos: u16,
     _marker: PhantomData<&'a u8>,
 }
 
 impl SlotDirIter<'_> {
-    pub(super) fn new(ptr: *const u8, size: usize) -> Self {
+    pub(super) fn new(ptr: *const u8, size: u16) -> Self {
         Self {
             ptr,
             size,
@@ -1074,8 +1147,8 @@ impl SlotDirIter<'_> {
     }
 
     #[inline(always)]
-    pub(super) fn slot_count(&self) -> usize {
-        self.size / ENTRY_SIZE
+    pub(super) fn slot_count(&self) -> u16 {
+        self.size / ENTRY_SIZE_U16
     }
 
     pub(super) fn next_entry(&mut self) -> Option<SlotEntry> {
@@ -1090,7 +1163,7 @@ impl SlotDirIter<'_> {
         unsafe {
             // TODO Add safety note
             // Start is pointer in the page at the position of the last entry which we advance by ENTRY_SIZE
-            let start = self.ptr.add(self.pos * ENTRY_SIZE);
+            let start = self.ptr.add(self.pos as usize * ENTRY_SIZE);
 
             let offset = read_u16_le_unsafe(start);
             let length = read_u16_le_unsafe(start.add(2));
@@ -1173,16 +1246,16 @@ mod tests {
 
         // Second test free start
         let c_free_start = page.free_start();
-        assert_eq!(c_free_start, HEADER_SIZE);
-        let new_free_start: usize = 25;
+        assert_eq!(c_free_start, HEADER_SIZE_U16);
+        let new_free_start: u16 = 25;
         page.set_free_start(new_free_start);
         assert_eq!(page.free_start(), new_free_start);
 
         // Thirs test free end
         let c_free_end = page.free_end();
-        assert_eq!(c_free_end, PAGE_SIZE);
-        let new_free_end = PAGE_SIZE - 10;
-        page.set_free_end(new_free_end as u16);
+        assert_eq!(c_free_end, PAGE_SIZE_U16);
+        let new_free_end = PAGE_SIZE_U16 - 10;
+        page.set_free_end(new_free_end);
         assert_eq!(page.free_end(), new_free_end);
 
         // TODO Finish testing ------------- it's boring but just do it
@@ -1245,7 +1318,7 @@ mod tests {
         });
 
         // Test index
-        let insert_index = 2;
+        let insert_index: u16 = 2;
 
         let mut assert_vec = Vec::with_capacity(4);
 
@@ -1256,8 +1329,8 @@ mod tests {
         page.append_slot_entry(SlotEntry::new(200, 40)).unwrap();
         assert_vec.push((200, 40));
 
-        assert_eq!(assert_vec[insert_index].0, 200);
-        assert_eq!(assert_vec[insert_index].1, 40);
+        assert_eq!(assert_vec[insert_index as usize].0, 200);
+        assert_eq!(assert_vec[insert_index as usize].1, 40);
 
         page.insert_slot_entry_at_index(
             insert_index,
@@ -1267,10 +1340,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_vec.insert(insert_index, (50, 30));
+        assert_vec.insert(insert_index as usize, (50, 30));
 
-        assert_eq!(assert_vec[insert_index].0, 50);
-        assert_eq!(assert_vec[insert_index].1, 30);
+        assert_eq!(assert_vec[insert_index as usize].0, 50);
+        assert_eq!(assert_vec[insert_index as usize].1, 30);
     }
 
     #[test]
@@ -1307,7 +1380,7 @@ mod tests {
 
         page.alloc_cell(cell).ok().unwrap();
 
-        let want_memory_usage = cell.len() + 4;
+        let want_memory_usage: u16 = cell.len() as u16 + 4;
 
         assert_eq!(page.memory_used_non_frag(), want_memory_usage);
     }
@@ -1347,12 +1420,12 @@ mod tests {
 
         // Now we need to remove a range from the slot array and check both slot_count and free_start
 
-        let result = page.remove_slot_index_range(2..5);
+        let result = page.remove_slot_index_range(2..5, |_, _, _| Ok(()));
         match result {
             Ok(()) => {
                 let new_count = page.slot_dir_ref().slot_count();
                 assert_eq!(new_count, 4);
-                let new_fs = fs - (3 * ENTRY_SIZE);
+                let new_fs = fs - (3 * ENTRY_SIZE_U16);
                 assert_eq!(new_fs, page.free_start());
             }
             Err(e) => {
@@ -1404,7 +1477,7 @@ mod tests {
             Ok(_) => {
                 for (i, se) in sp2.slot_dir_ref().iter().enumerate() {
                     // We assert memory usage
-                    assert_eq!(sp2.memory_used_non_frag(), 20 + 2 * ENTRY_SIZE);
+                    assert_eq!(sp2.memory_used_non_frag(), 20 + 2 * ENTRY_SIZE_U16);
                     // We assert that the test key is the last in the iteration
                     if i == 1 {
                         let key = String::from_utf8_lossy(sp2.cell_slice_from_entry(se));
@@ -1414,6 +1487,37 @@ mod tests {
             }
             Err(e) => {
                 println!("Transfer failed: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_page() {
+        let mut page = half_full_page(0).ok().unwrap();
+        let mut sp = SlottedPageMut::from_bytes(&mut page);
+
+        // Need to delete a slot entry range to create a fragmented space
+        // We'll delete ten slot entries from the middle which will be a size of 40
+        //
+
+        // Setup checks
+        assert_eq!(sp.memory_used(), 2044);
+        assert_eq!(sp.get_fragmented_space(), 0);
+
+        let result = sp.remove_slot_index_range(50..60, |_, _, _| Ok(()));
+        match result {
+            Ok(_) => {
+                // Before compact checks
+                assert_eq!(sp.memory_used_non_frag(), 2004);
+                assert_eq!(sp.get_fragmented_space(), 100);
+                if let Ok(_) = sp.compact() {
+                    // After compact checks
+                    assert_eq!(sp.memory_used_non_frag(), 1904);
+                    assert_eq!(sp.get_fragmented_space(), 0);
+                }
+            }
+            Err(e) => {
+                println!("Failed {:?}", e);
             }
         }
     }

@@ -80,7 +80,7 @@ impl<'page> IndexPageMut<'page> {
 
         // Set free start to default HEADER_SIZE
 
-        self.page.set_free_start(HEADER_SIZE);
+        self.page.set_free_start(HEADER_SIZE as u16);
 
         // Adjust free_end for special offset
         self.page.set_free_end(PAGE_SIZE_U16 - INDEX_SPECIAL_SIZE)?;
@@ -141,7 +141,7 @@ impl<'page> IndexPageMut<'page> {
 
     pub(crate) fn add_cell_at_slot_entry_index(
         &mut self,
-        index: usize,
+        index: u16,
         cell: IndexCellOwned,
     ) -> Result<()> {
         // We take an owned IndexCell which we then consume and store as bytes in the RawPage
