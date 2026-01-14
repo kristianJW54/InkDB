@@ -2,7 +2,7 @@
 
 // We want to look at fences - look at prefix compression and look ahead
 
-use crate::page::slotted_page::PAGE_SIZE_U16;
+use crate::page::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16, SlotEntry};
 // Page types interpret over the slotted page for their type
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
@@ -37,7 +37,7 @@ const RIGHT_SIBLING_OFFSET: usize = 8;
 pub(crate) struct IndexCellOwned(Box<[u8]>);
 
 impl IndexCellOwned {
-    pub(crate) const MAX_INDEX_CELL_SIZE: usize = PAGE_SIZE - HEADER_SIZE - ENTRY_SIZE;
+    pub(crate) const MAX_INDEX_CELL_SIZE: usize = (PAGE_SIZE - HEADER_SIZE - ENTRY_SIZE) / 2;
 
     pub(crate) fn new(key: &[u8], child_ptr: PageID) -> Self {
         let est_size = 10 + key.len();
@@ -132,23 +132,30 @@ impl<'page> IndexPageMut<'page> {
         }
     }
 
-    pub(crate) fn add_cell_append_slot_entry(&mut self, cell: IndexCellOwned) -> Result<()> {
-        // We take an owned IndexCell which we then consume and store as bytes
-        let bytes = cell.0.as_ref();
-        self.page.alloc_cell(bytes)?;
-        Ok(())
-    }
+    pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
+        // Encode cell
+        let cell = IndexCellOwned::new(key, child_ptr);
 
-    pub(crate) fn add_cell_at_slot_entry_index(
-        &mut self,
-        index: u16,
-        cell: IndexCellOwned,
-    ) -> Result<()> {
-        // We take an owned IndexCell which we then consume and store as bytes in the RawPage
-        let bytes = cell.deref();
-        self.page
-            .insert_cell(bytes, |s, entry| s.insert_slot_entry_at_index(index, entry))?;
-        Ok(())
+        // Fast path memory check
+        let contiguous = self.page.free_contiguous_space();
+        let frag = self.page.free_fragmented_space();
+
+        // We need to figure logic here - do we want to return ctx if no contiguous and let b-tree call back in for frag?
+        // Or do a frag check and return ctx with error for tree either can_compact or must split
+
+        if contiguous < (cell.len() as u16) {
+            // We check fragment space
+            if contiguous + frag < (cell.len() as u16) {
+                return Err(IndexPageError::PageError(PageError::InsertError(
+                    InsertErrorCtx::new(contiguous, frag),
+                )));
+            }
+        }
+
+        // Need a find insert point
+
+        self.page.insert_cell(cell.deref(), 0)?;
+        todo!("Finish")
     }
 }
 
@@ -181,6 +188,8 @@ impl<'page> IndexPageRef<'page> {
         };
 
         let skip = if high_key { 1 } else { 0 };
+
+        // TODO ------- We can do a check on slot_count if it's above a threshold to use binary search
 
         // We need to store the last child_ptr so if we are not the rightmost child and we are greater than the last key,
         // we can 'fall off' to the last child_ptr

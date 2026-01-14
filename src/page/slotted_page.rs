@@ -71,6 +71,22 @@ pub(crate) enum PageError {
     InvalidFreeEnd,
     InvalidFreeStart,
     TransferError,
+    InsertError(InsertErrorCtx),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InsertErrorCtx {
+    contiguous_space: u16,
+    fragment_space: u16,
+}
+
+impl InsertErrorCtx {
+    pub(crate) fn new(contiguous_space: u16, fragment_space: u16) -> Self {
+        Self {
+            contiguous_space,
+            fragment_space,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -284,13 +300,13 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     #[inline]
-    pub(super) fn free_fragmented_space(&self) -> usize {
+    pub(super) fn free_fragmented_space(&self) -> u16 {
         // Because we store fragmented space in header we can simply fetch and return it
 
         // SAFETY: We have exclusive access to raw page, we know that fragmented space is within bounds of page so reading it is safe
         unsafe {
             let b_ptr = self.bytes.as_ptr().add(FRAG_OFFSET);
-            read_u16_le_unsafe(b_ptr) as usize
+            read_u16_le_unsafe(b_ptr)
         }
     }
 
@@ -377,7 +393,7 @@ impl<'a> SlottedPageMut<'a> {
     //NOTE: We have already inserted the row data and done so with the assumption that there is enough space
     // to insert a slot_entry
     //NOTE: Do we need to pass in u16 or if this is called after inserting row data can we pass in ptr?
-    pub(super) fn append_slot_entry(&mut self, entry: SlotEntry) -> Result<()> {
+    fn append_slot_entry(&mut self, entry: SlotEntry) -> Result<()> {
         let fs = self.free_start();
         let end = self.free_end();
 
@@ -423,6 +439,10 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::SlotIndexNotInRange);
         }
 
+        if idx == 0 {
+            return self.prepend_slot_entry(entry);
+        }
+
         if idx == slot_count {
             return self.append_slot_entry(entry);
         }
@@ -453,13 +473,15 @@ impl<'a> SlottedPageMut<'a> {
         }
     }
 
-    pub(super) fn prepend_slot_entry(&mut self, entry: SlotEntry) -> Result<()> {
+    fn prepend_slot_entry(&mut self, entry: SlotEntry) -> Result<()> {
         let fs = self.free_start();
         let end = self.free_end();
 
         if end - fs < ENTRY_SIZE_U16 {
             return Err(PageError::NotEnoughFreeSpace);
         }
+
+        // TODO ----------- IF High key we need to prepand at index 1
 
         debug_assert!(fs + ENTRY_SIZE_U16 <= PAGE_SIZE_U16);
         debug_assert!(fs >= HEADER_SIZE_U16);
@@ -500,7 +522,6 @@ impl<'a> SlottedPageMut<'a> {
         F: FnMut(&Self, SlotEntryRef, CellRef) -> Result<()>,
     {
         let slot_count = self.slot_dir_ref().slot_count();
-        let fs = self.free_start() as isize;
         assert!(range.start < range.end);
         assert!(range.end <= slot_count);
 
@@ -514,16 +535,13 @@ impl<'a> SlottedPageMut<'a> {
             frag += read_u16_le(length);
             f(self, se, cell)?;
         }
-
         self.increase_fragmented_space(frag);
-
         self.remove_slot_array_physical(range)?;
         Ok(())
     }
 
     fn remove_slot_array_physical(&mut self, range: Range<u16>) -> Result<()> {
         let slot_count = self.slot_dir_ref().slot_count();
-        let fs = self.free_start() as isize;
         assert!(range.start < range.end);
         assert!(range.end <= slot_count);
 
@@ -609,7 +627,7 @@ impl<'a> SlottedPageMut<'a> {
         Ok(&mut self.bytes[s_offset..s_offset + size])
     }
 
-    pub(super) fn alloc_cell(&mut self, cell: &[u8]) -> Result<SlotEntry> {
+    fn alloc_cell(&mut self, cell: &[u8]) -> Result<SlotEntry> {
         // Check we have enough free space?
         // We talk only to contigious space here because we can return Err(PageError::NoContigiousSpace)
         // And allow the caller to call back into the raw page methods to either compact or split the page
@@ -618,7 +636,10 @@ impl<'a> SlottedPageMut<'a> {
         let free_end = self.free_end();
 
         if (cell.len() + ENTRY_SIZE) > (free_end - free_start) as usize {
-            return Err(PageError::NoContigiousSpace);
+            return Err(PageError::InsertError(InsertErrorCtx {
+                contiguous_space: self.free_contiguous_space(),
+                fragment_space: self.get_fragmented_space(),
+            }));
         }
 
         let cell_start_offset = free_end - cell.len() as u16;
@@ -644,12 +665,9 @@ impl<'a> SlottedPageMut<'a> {
         Ok(entry)
     }
 
-    pub(super) fn insert_cell<F>(&mut self, cell: &[u8], f: F) -> Result<()>
-    where
-        F: FnOnce(&mut Self, SlotEntry) -> Result<()>,
-    {
+    pub(super) fn insert_cell(&mut self, cell: &[u8], insert_index: u16) -> Result<()> {
         let entry = self.alloc_cell(cell)?;
-        f(self, entry)?;
+        self.insert_slot_entry_at_index(insert_index, entry)?;
         Ok(())
     }
 
