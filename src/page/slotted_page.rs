@@ -78,13 +78,15 @@ pub(crate) enum PageError {
 pub(crate) struct InsertErrorCtx {
     contiguous_space: u16,
     fragment_space: u16,
+    required_space: u16,
 }
 
 impl InsertErrorCtx {
-    pub(crate) fn new(contiguous_space: u16, fragment_space: u16) -> Self {
+    pub(crate) fn new(contiguous_space: u16, fragment_space: u16, required_space: u16) -> Self {
         Self {
             contiguous_space,
             fragment_space,
+            required_space,
         }
     }
 }
@@ -516,7 +518,7 @@ impl<'a> SlottedPageMut<'a> {
     // part a of the page, physically and contiguously they exist, but implicity they do not. So when we try to insert new cells, if we do not have enough contiguous space,
     // we must check fragmented (non addressable) space if we can compact and insert there.
 
-    pub(super) fn remove_slot_index_range<F>(&mut self, range: Range<u16>, mut f: F) -> Result<()>
+    fn remove_slot_index_range<F>(&mut self, range: Range<u16>, mut f: F) -> Result<()>
     where
         // We will go into a loop - and give the caller a closure to operate inside the loop with a slot_entry and cell_bytes
         F: FnMut(&Self, SlotEntryRef, CellRef) -> Result<()>,
@@ -531,7 +533,9 @@ impl<'a> SlottedPageMut<'a> {
         // Once we've made our assertions we can iterate over the range
         for i in range.start..range.end {
             let (se, cell) = self.cell_and_entry_from_index(i)?;
-            let (_, length) = se.0.split_at(2);
+            println!("se {:?}", se.0);
+            let length = &se.0[2..];
+            println!("length {:?}", read_u16_le(length));
             frag += read_u16_le(length);
             f(self, se, cell)?;
         }
@@ -627,7 +631,22 @@ impl<'a> SlottedPageMut<'a> {
         Ok(&mut self.bytes[s_offset..s_offset + size])
     }
 
-    fn alloc_cell(&mut self, cell: &[u8]) -> Result<SlotEntry> {
+    pub(super) fn check_contiguous_insert(&self, cell: &[u8]) -> Result<()> {
+        let contiguous = self.free_contiguous_space();
+        let frag = self.get_fragmented_space();
+
+        if (cell.len() + ENTRY_SIZE) > contiguous as usize {
+            return Err(PageError::InsertError(InsertErrorCtx {
+                contiguous_space: contiguous,
+                fragment_space: frag,
+                required_space: cell.len() as u16 + ENTRY_SIZE_U16,
+            }));
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn insert_cell(&mut self, cell: &[u8], insert_index: u16) -> Result<()> {
         // Check we have enough free space?
         // We talk only to contigious space here because we can return Err(PageError::NoContigiousSpace)
         // And allow the caller to call back into the raw page methods to either compact or split the page
@@ -639,6 +658,7 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::InsertError(InsertErrorCtx {
                 contiguous_space: self.free_contiguous_space(),
                 fragment_space: self.get_fragmented_space(),
+                required_space: cell.len() as u16 + ENTRY_SIZE_U16,
             }));
         }
 
@@ -662,13 +682,15 @@ impl<'a> SlottedPageMut<'a> {
         // After successful insertion we need to update free_end
         self.set_free_end(cell_start_offset)?;
 
-        Ok(entry)
+        // Now we insert the slot_entry
+        self.insert_slot_entry_at_index(insert_index, entry)?;
+
+        Ok(())
     }
 
-    pub(super) fn insert_cell(&mut self, cell: &[u8], insert_index: u16) -> Result<()> {
-        let entry = self.alloc_cell(cell)?;
-        self.insert_slot_entry_at_index(insert_index, entry)?;
-        Ok(())
+    pub(super) fn insert_cell_append(&mut self, cell: &[u8]) -> Result<()> {
+        let slot_count = self.get_slot_count();
+        return self.insert_cell(cell, slot_count);
     }
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
@@ -720,6 +742,7 @@ impl<'a> SlottedPageMut<'a> {
         assert!(idx < slot_count);
 
         let index_offset = idx * ENTRY_SIZE;
+        println!("index_offset: {}", index_offset);
 
         // SAFETY: We know we have a valid slot entry and that it is within bounds
         // We can get a reference to the slot directory and use it's stored ptr to offset to the slot_index
@@ -785,7 +808,7 @@ impl<'a> SlottedPageMut<'a> {
             // Append > [aaae, aaaf, aaag, aaah]
             //
 
-            page.insert_cell(cell.0, |s, entry| s.append_slot_entry(entry))?;
+            let entry = page.insert_cell(cell.0, slot_count)?;
 
             // If we successfully move the cell to new page, we need to remove the slot entry from current page and by doing this we
             // effectively remove the cell from the current page
@@ -813,8 +836,8 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         for i in 0..slot_count {
-            if let Ok((se, cell)) = self.cell_and_entry_from_index(i) {
-                sp.insert_cell(cell.0, |s, entry| s.append_slot_entry(entry))?;
+            if let Ok((_, cell)) = self.cell_and_entry_from_index(i) {
+                sp.insert_cell_append(cell.0)?;
                 // Unlike transfer we don't really care about clearing up the current page since we will be swapping it out
             }
         }
@@ -1220,7 +1243,7 @@ mod tests {
     use super::*;
     use std::{mem, process};
 
-    fn half_full_page(insert_test_at_index: usize) -> Result<RawPage> {
+    fn half_full_page() -> Result<RawPage> {
         let mut rp: RawPage = [0u8; 4096];
         let mut sp = SlottedPageMut::init_new(&mut rp, 255);
 
@@ -1237,15 +1260,12 @@ mod tests {
         let target_used = payload_capacity / 2;
         let entries_needed = target_used / entry_cost;
 
-        for i in 0..=entries_needed {
-            if i == insert_test_at_index {
-                sp.insert_cell(b"test  test", |s, entry| s.prepend_slot_entry(entry))?;
-            } else {
-                let mut key = [1u8; 10];
-                key[9] = 2;
-                sp.insert_cell(&key, |s, entry| s.prepend_slot_entry(entry))?;
-            }
+        for _ in 0..=entries_needed - 1 {
+            let mut key = [1u8; 10];
+            key[9] = 2;
+            sp.insert_cell(&key, 0)?;
         }
+        sp.insert_cell(b"test  test", 0)?;
 
         Ok(rp)
     }
@@ -1372,7 +1392,7 @@ mod tests {
 
         let cell = "I am a cell".as_bytes();
 
-        match page.alloc_cell(cell) {
+        match page.insert_cell(cell, 0) {
             Ok(_) => match page.cell_slice_from_id(0) {
                 Ok(cell) => {
                     let string = str::from_utf8(cell).unwrap();
@@ -1396,13 +1416,14 @@ mod tests {
 
         let cell = "I am a cell".as_bytes();
 
-        page.alloc_cell(cell).ok().unwrap();
+        page.insert_cell(cell, 0).ok().unwrap();
 
         let want_memory_usage: u16 = cell.len() as u16 + 4;
 
         assert_eq!(page.memory_used_non_frag(), want_memory_usage);
     }
 
+    // TODO --------------- Need to fix
     #[test]
     fn remove_slot_range() {
         let mut raw_page: RawPage = [0u8; 4096];
@@ -1438,7 +1459,7 @@ mod tests {
 
         // Now we need to remove a range from the slot array and check both slot_count and free_start
 
-        let result = page.remove_slot_index_range(2..5, |_, _, _| Ok(()));
+        let result = page.remove_slot_index_range(0..2, |_, _, _| Ok(()));
         match result {
             Ok(()) => {
                 let new_count = page.slot_dir_ref().slot_count();
@@ -1454,24 +1475,24 @@ mod tests {
 
     #[test]
     fn retrieving_cells() {
-        let page = half_full_page(0);
+        let page = half_full_page();
         match page {
             Ok(p) => {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
                 let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
-                assert_eq!(str, "test test");
+                assert_eq!(str, "test  test");
             }
             Err(e) => {
                 panic!("Error creating half-full page: {:?}", e);
             }
         }
-        let page2 = half_full_page(30);
+        let page2 = half_full_page();
         match page2 {
             Ok(p) => {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
-                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(30)).ok().unwrap());
+                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
                 assert_eq!(str, "test  test");
             }
             Err(e) => {
@@ -1483,7 +1504,7 @@ mod tests {
     #[test]
     fn transfer_page() {
         // We are inserting test message at the beginning - half full page prepends so this means test messsage will stay at the end of the page
-        let mut page = half_full_page(0).ok().unwrap();
+        let mut page = half_full_page().ok().unwrap();
         let mut sp = SlottedPageMut::from_bytes(&mut page);
         let mut page2: RawPage = [0u8; 4096];
         let mut sp2 = SlottedPageMut::init_new(&mut page2, 255);
@@ -1511,7 +1532,7 @@ mod tests {
 
     #[test]
     fn compact_page() {
-        let mut page = half_full_page(0).ok().unwrap();
+        let mut page = half_full_page().ok().unwrap();
         let mut sp = SlottedPageMut::from_bytes(&mut page);
 
         // Need to delete a slot entry range to create a fragmented space

@@ -143,18 +143,17 @@ impl<'page> IndexPageMut<'page> {
         // We need to figure logic here - do we want to return ctx if no contiguous and let b-tree call back in for frag?
         // Or do a frag check and return ctx with error for tree either can_compact or must split
 
-        if contiguous < (cell.len() as u16) {
-            // We check fragment space
-            if contiguous + frag < (cell.len() as u16) {
-                return Err(IndexPageError::PageError(PageError::InsertError(
-                    InsertErrorCtx::new(contiguous, frag),
-                )));
-            }
-        }
+        // We can check if we can insert the cell - if we error we can propagate the InsertErrorCtx back up to the tree to decide
+        // If we are ok then we can find an insert index and try to insert the cell
 
-        // Need a find insert point
+        self.page.check_contiguous_insert(cell.deref())?;
 
-        self.page.insert_cell(cell.deref(), 0)?;
+        // Now we find the insert index
+        // - Here
+
+        // We can try to allocate a cell - if we get an error, we can propagate the InsertErrorCtx back to the tree for it decide on a strategy
+        let entry = self.page.insert_cell(cell.deref(), 0)?;
+
         todo!("Finish")
     }
 }
