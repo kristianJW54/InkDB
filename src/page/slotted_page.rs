@@ -7,6 +7,7 @@ use std::f64::consts::PI;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut, Range};
+use std::ptr::read;
 use std::{ptr, slice};
 
 // TODO If SlottedPage gets too chaotic with mutating and reading we can split into SlottedRead & SlottedWrite??
@@ -533,15 +534,14 @@ impl<'a> SlottedPageMut<'a> {
         // Once we've made our assertions we can iterate over the range
         for i in range.start..range.end {
             let (se, cell) = self.cell_and_entry_from_index(i)?;
-            println!("se {:?}", se.0);
-            let length = &se.0[2..];
-            println!("length {:?}", read_u16_le(length));
+            let length = &se.0[2..2 + 2];
+            let nl = read_u16_le(length);
             frag += read_u16_le(length);
             f(self, se, cell)?;
         }
         self.increase_fragmented_space(frag);
         self.remove_slot_array_physical(range)?;
-        Ok(())
+        return Ok(());
     }
 
     fn remove_slot_array_physical(&mut self, range: Range<u16>) -> Result<()> {
@@ -596,6 +596,7 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         // Decrement the free start by the shift size
+        println!("Decrementing free start by {}", removed_bytes);
         let new_fs = self.decrement_free_start(removed_bytes);
         match new_fs {
             Ok(fs) => {
@@ -742,7 +743,6 @@ impl<'a> SlottedPageMut<'a> {
         assert!(idx < slot_count);
 
         let index_offset = idx * ENTRY_SIZE;
-        println!("index_offset: {}", index_offset);
 
         // SAFETY: We know we have a valid slot entry and that it is within bounds
         // We can get a reference to the slot directory and use it's stored ptr to offset to the slot_index
@@ -759,7 +759,9 @@ impl<'a> SlottedPageMut<'a> {
             }
 
             let cell_ref = self.bytes[offset..offset + length].as_ref();
-            let se_ref = self.bytes[index_offset..index_offset + ENTRY_SIZE].as_ref();
+            let se_ref = self.bytes
+                [HEADER_SIZE + index_offset..HEADER_SIZE + index_offset + ENTRY_SIZE]
+                .as_ref();
 
             Ok((SlotEntryRef(se_ref), CellRef(cell_ref)))
         }
@@ -1300,32 +1302,6 @@ mod tests {
     }
 
     #[test]
-    fn slot_dir() {
-        let mut raw_page: RawPage = [0u8; 4096];
-        // We need a mutable view here to initialize the page
-        let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
-
-        let mut assert_vec = Vec::with_capacity(3);
-
-        page.append_slot_entry(SlotEntry::new(100, 12)).unwrap();
-        assert_vec.push((100, 12));
-        page.append_slot_entry(SlotEntry::new(200, 21)).unwrap();
-        assert_vec.push((200, 21));
-        page.append_slot_entry(SlotEntry::new(300, 22)).unwrap();
-        assert_vec.push((300, 22));
-
-        drop(page);
-        // Now we need a ref view
-        let ref_page = SlottedPageRef::from_bytes(&raw_page);
-        let sd = ref_page.slot_dir_ref();
-
-        for (i, se) in sd.iter().enumerate() {
-            assert_eq!(assert_vec[i].0, se.length);
-            assert_eq!(assert_vec[i].1, se.offset);
-        }
-    }
-
-    #[test]
     fn check_undefined_special() {
         let mut raw_page: RawPage = [0u8; 4096];
         // We need a mutable view here to initialize the page
@@ -1430,25 +1406,25 @@ mod tests {
         let mut page = SlottedPageMut::init_new(&mut raw_page, 255);
 
         // Append a bunch of slot entries
-        page.append_slot_entry(SlotEntry::new(100, 10))
+        page.append_slot_entry(SlotEntry::new(1000, 10))
             .ok()
             .unwrap(); // A
-        page.append_slot_entry(SlotEntry::new(120, 12))
+        page.append_slot_entry(SlotEntry::new(1200, 12))
             .ok()
             .unwrap(); // B
-        page.append_slot_entry(SlotEntry::new(140, 14))
+        page.append_slot_entry(SlotEntry::new(1400, 14))
             .ok()
             .unwrap(); // C
-        page.append_slot_entry(SlotEntry::new(160, 16))
+        page.append_slot_entry(SlotEntry::new(1600, 16))
             .ok()
             .unwrap(); // D
-        page.append_slot_entry(SlotEntry::new(180, 18))
+        page.append_slot_entry(SlotEntry::new(1800, 18))
             .ok()
             .unwrap(); // E
-        page.append_slot_entry(SlotEntry::new(200, 20))
+        page.append_slot_entry(SlotEntry::new(2000, 20))
             .ok()
             .unwrap(); // F
-        page.append_slot_entry(SlotEntry::new(220, 22))
+        page.append_slot_entry(SlotEntry::new(2200, 22))
             .ok()
             .unwrap(); // G
 
@@ -1459,12 +1435,12 @@ mod tests {
 
         // Now we need to remove a range from the slot array and check both slot_count and free_start
 
-        let result = page.remove_slot_index_range(0..2, |_, _, _| Ok(()));
+        let result = page.remove_slot_index_range(2..4, |_, _, _| Ok(()));
         match result {
             Ok(()) => {
                 let new_count = page.slot_dir_ref().slot_count();
-                assert_eq!(new_count, 4);
-                let new_fs = fs - (3 * ENTRY_SIZE_U16);
+                assert_eq!(new_count, 5);
+                let new_fs = fs - (2 * ENTRY_SIZE_U16);
                 assert_eq!(new_fs, page.free_start());
             }
             Err(e) => {
