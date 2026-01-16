@@ -57,9 +57,7 @@ pub(super) struct BInner<'blink> {
     tx: &'blink OpCtx,
 }
 
-// TODO:
-// - Need to implement an insert method which returns a Result enum of InsertResult which is either a Ok or Split - Can we use null pointer optimisation?
-// -
+// TODO: Need to implement an insert method which returns a Result enum of InsertResult which is either a Ok or Split - Can we use null pointer optimisation?
 
 impl<'blink> BInner<'blink> {
     pub fn new(tx: &'blink OpCtx) -> Self {

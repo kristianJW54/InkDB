@@ -2,6 +2,7 @@
 
 // We want to look at fences - look at prefix compression and look ahead
 
+use crate::compression::prefix_compression::PxCompression;
 use crate::page::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16, SlotEntry};
 // Page types interpret over the slotted page for their type
 use crate::page::{
@@ -291,4 +292,12 @@ impl<'index_page> IndexCell<'index_page> {
             PageID::from(page_id)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_do() {}
 }
