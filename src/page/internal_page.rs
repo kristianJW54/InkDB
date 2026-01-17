@@ -2,7 +2,7 @@
 
 // We want to look at fences - look at prefix compression and look ahead
 
-use crate::compression::prefix_compression::PxCompression;
+use super::index_cell::IndexCellOwned;
 use crate::page::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16, SlotEntry};
 // Page types interpret over the slotted page for their type
 use crate::page::{
@@ -34,31 +34,6 @@ const INDEX_SPECIAL_SIZE: u16 = 16;
 const RIGHT_SIBLING_OFFSET: usize = 8;
 
 // TODO Integrate Level into rest of IndexPage
-
-pub(crate) struct IndexCellOwned(Box<[u8]>);
-
-impl IndexCellOwned {
-    pub(crate) const MAX_INDEX_CELL_SIZE: usize = (PAGE_SIZE - HEADER_SIZE - ENTRY_SIZE) / 2;
-
-    pub(crate) fn new(key: &[u8], child_ptr: PageID) -> Self {
-        let est_size = 10 + key.len();
-        assert!(est_size < Self::MAX_INDEX_CELL_SIZE);
-
-        let mut cell = Vec::with_capacity(est_size);
-        cell.extend_from_slice(&child_ptr.into().to_le_bytes());
-        cell.extend_from_slice(&(key.len() as u16).to_le_bytes());
-        cell.extend_from_slice(key);
-        IndexCellOwned(cell.into_boxed_slice())
-    }
-}
-
-impl Deref for IndexCellOwned {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 pub(crate) struct IndexPageMut<'page> {
     page: SlottedPageMut<'page>,
@@ -180,7 +155,7 @@ impl<'page> IndexPageRef<'page> {
             //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
             // and give a wrapped error with context
             let hkc = self.page.cell_slice_from_id(SlotID(0))?;
-            let high_key_cell = IndexCell::from(hkc);
+            let high_key_cell = InternalCell::from(hkc);
             high_key = true;
             if key > high_key_cell.get_key() {
                 return self.get_right_sibling();
@@ -196,7 +171,7 @@ impl<'page> IndexPageRef<'page> {
         let mut last_child_ptr: Option<PageID> = None;
 
         for se in self.page.slot_dir_ref().iter().skip(skip) {
-            let cell = IndexCell::from(self.page.cell_slice_from_entry(se));
+            let cell = InternalCell::from(self.page.cell_slice_from_entry(se));
             last_child_ptr = Some(cell.get_value_ptr());
             let cell_key = cell.get_key();
             if key < cell_key {
@@ -241,31 +216,28 @@ impl<'page> IndexPageRef<'page> {
     }
 }
 
-//TODO Later we decide if we want LeafIndexRef/Mut and InternalIndexRef/Mut etc
-// May not be needed at all...
-
-//------------------ Index Cells & Tuples ---------------------//
+//------------------ Internal Cells  ---------------------//
 
 // An index tuple is similar to Postgres Index tuple which is both a pivot tuple (internal) and
 // leaf tuple (leaf) with TID pointer to heap data
-
-// Index Cell Layout:
-// child_ptr OR tid_ptr (8 bytes) | key_len (2 bytes) | key_data |
 
 const CHILD_PTR_OFFSET: usize = 0;
 const KEY_LEN_OFFSET: usize = 8;
 const KEY_DATA_OFFSET: usize = 10;
 
-// TODO Finish completing the index cell layout and method blocks
+// TODO: Define the IndexCell layout and comment the byte structure layout
+// Index Cell Layout:
+// child_ptr OR tid_ptr (8 bytes) | prefix (2 bytes) | key_len (2 bytes) | key_data |
 
+// TODO: InternalCellRef needs to wrap IndexCellRef
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct IndexCell<'index_page> {
+struct InternalCell<'index_page> {
     cell: &'index_page [u8],
     // May want things like child_ptr or key unless we copy out and return on method call (think about why
     // we would want to store anything)
 }
 
-impl<'index_page> IndexCell<'index_page> {
+impl<'index_page> InternalCell<'index_page> {
     fn from(cell_ref: &'index_page [u8]) -> Self {
         assert!(cell_ref.len() >= 10);
         Self { cell: cell_ref }

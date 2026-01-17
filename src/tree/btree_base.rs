@@ -134,6 +134,12 @@ impl<'blink> BInner<'blink> {
             }
         }
     }
+
+    pub(super) fn try_insert(&mut self, key: &[u8]) -> Result<()> {
+        //
+
+        todo!("finish insert")
+    }
 }
 
 pub(super) struct TraverseCtx<'a> {

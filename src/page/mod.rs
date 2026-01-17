@@ -1,6 +1,8 @@
 use std::ptr;
-pub mod internal_page;
-pub mod leaf;
+mod index_cell;
+pub(crate) mod internal_page;
+pub(crate) mod leaf;
+mod prefix_compression;
 mod slotted_page;
 pub(crate) use slotted_page::{
     ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
