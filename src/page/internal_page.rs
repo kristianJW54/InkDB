@@ -3,37 +3,38 @@
 // We want to look at fences - look at prefix compression and look ahead
 
 use super::index_cell::IndexCellOwned;
+use crate::page::index_cell::{IndexCellMut, IndexCellRef};
 use crate::page::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16, SlotEntry};
 // Page types interpret over the slotted page for their type
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
     read_u16_le_unsafe,
 };
-use crate::page::{PageID, PageKind, PageType, SlotID, read_u64_le_unsafe};
+use crate::page::{PageID, PageKind, PageType, SlotEntry, read_u64_le_unsafe};
 use page::IndexLevel;
 use std::ops::Deref;
 use std::slice::from_raw_parts;
 
-pub(crate) type Result<T> = std::result::Result<T, IndexPageError>;
+pub(crate) type Result<T> = std::result::Result<T, InternalPageError>;
 
 #[derive(Debug, Clone)]
-pub(crate) enum IndexPageError {
+pub(crate) enum InternalPageError {
     PageError(PageError),
     InvalidPageType,
     InvalidLevel,
     ChildNotFound,
 }
 
-impl From<PageError> for IndexPageError {
+impl From<PageError> for InternalPageError {
     fn from(error: PageError) -> Self {
-        IndexPageError::PageError(error)
+        InternalPageError::PageError(error)
     }
 }
 
 const INDEX_SPECIAL_SIZE: u16 = 16;
 const RIGHT_SIBLING_OFFSET: usize = 8;
 
-// TODO Integrate Level into rest of IndexPage
+// TODO: Integrate Level into rest of IndexPage
 
 pub(crate) struct IndexPageMut<'page> {
     page: SlottedPageMut<'page>,
@@ -42,6 +43,16 @@ pub(crate) struct IndexPageMut<'page> {
 impl<'page> IndexPageMut<'page> {
     pub(crate) fn from_slotted_page(page: SlottedPageMut<'page>) -> Self {
         IndexPageMut { page }
+    }
+
+    // TODO: Check if this is correct
+    pub(super) fn cell_mut_from_slot_entry(
+        &'page mut self,
+        se: SlotEntry,
+    ) -> InternalCellMut<'page> {
+        InternalCellMut {
+            inner: IndexCellMut::from(&mut self.page, se),
+        }
     }
 
     pub(crate) fn init_in_place(&mut self, lsn: u64) -> Result<()> {
@@ -149,13 +160,19 @@ impl<'page> IndexPageRef<'page> {
         Self { page }
     }
 
+    pub(super) fn cell_from_slot_entry(&'page self, se: SlotEntry) -> InternalCellRef<'page> {
+        InternalCellRef {
+            inner: IndexCellRef::from(&self.page, se),
+        }
+    }
+
     pub(crate) fn find_child_ptr(&self, key: &[u8]) -> Result<PageID> {
         let mut high_key = false;
         if self.has_right_sibling() {
-            //TODO - For now we are returning wrapped PageError. We may want to handle the PageError differently
-            // and give a wrapped error with context
-            let hkc = self.page.cell_slice_from_id(SlotID(0))?;
-            let high_key_cell = InternalCell::from(hkc);
+            //TODO: - For now we are returning wrapped PageError. We may want to handle the PageError differently and give a wrapped error with context
+            let hkc = self.page.cell_slice_from_id(SlotEntry(0))?;
+            // TODO: Fix this
+            let high_key_cell = InternalCellRef::from(hkc);
             high_key = true;
             if key > high_key_cell.get_key() {
                 return self.get_right_sibling();
@@ -164,23 +181,24 @@ impl<'page> IndexPageRef<'page> {
 
         let skip = if high_key { 1 } else { 0 };
 
-        // TODO ------- We can do a check on slot_count if it's above a threshold to use binary search
+        // TODO: ------- We can do a check on slot_count if it's above a threshold to use binary search
 
         // We need to store the last child_ptr so if we are not the rightmost child and we are greater than the last key,
         // we can 'fall off' to the last child_ptr
         let mut last_child_ptr: Option<PageID> = None;
 
         for se in self.page.slot_dir_ref().iter().skip(skip) {
-            let cell = InternalCell::from(self.page.cell_slice_from_entry(se));
-            last_child_ptr = Some(cell.get_value_ptr());
+            // TODO: Implement this method
+            let cell = self.cell_from_slot_entry(se);
+            last_child_ptr = Some(cell.get_child_ptr());
             let cell_key = cell.get_key();
             if key < cell_key {
-                return Ok(cell.get_value_ptr());
+                return Ok(cell.get_child_ptr());
             }
         }
 
         // Fall off to last chil_ptr here
-        return last_child_ptr.ok_or(IndexPageError::ChildNotFound);
+        return last_child_ptr.ok_or(InternalPageError::ChildNotFound);
     }
 
     //
@@ -218,52 +236,36 @@ impl<'page> IndexPageRef<'page> {
 
 //------------------ Internal Cells  ---------------------//
 
-// An index tuple is similar to Postgres Index tuple which is both a pivot tuple (internal) and
-// leaf tuple (leaf) with TID pointer to heap data
-
-const CHILD_PTR_OFFSET: usize = 0;
-const KEY_LEN_OFFSET: usize = 8;
-const KEY_DATA_OFFSET: usize = 10;
-
-// TODO: Define the IndexCell layout and comment the byte structure layout
-// Index Cell Layout:
-// child_ptr OR tid_ptr (8 bytes) | prefix (2 bytes) | key_len (2 bytes) | key_data |
-
-// TODO: InternalCellRef needs to wrap IndexCellRef
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct InternalCell<'index_page> {
-    cell: &'index_page [u8],
+// TODO: Fix the lifetimes and field names
+#[derive(Debug)]
+struct InternalCellRef<'a, 'page> {
+    inner: IndexCellRef<'a, 'page>,
     // May want things like child_ptr or key unless we copy out and return on method call (think about why
     // we would want to store anything)
 }
 
-impl<'index_page> InternalCell<'index_page> {
-    fn from(cell_ref: &'index_page [u8]) -> Self {
-        assert!(cell_ref.len() >= 10);
-        Self { cell: cell_ref }
-    }
-
+impl<'a, 'page> InternalCellRef<'a, 'page> {
     fn get_key(&self) -> &[u8] {
-        unsafe {
-            let cell_ptr = self.cell.as_ptr();
-            let key_len = read_u16_le_unsafe(cell_ptr.add(KEY_LEN_OFFSET)) as usize;
-
-            let key_ptr = cell_ptr.add(KEY_DATA_OFFSET);
-
-            debug_assert!(KEY_DATA_OFFSET + key_len <= self.cell.len());
-
-            from_raw_parts(key_ptr, key_len)
-        }
+        // TODO: Fix the error returning here
+        self.inner.get_key().ok().unwrap()
     }
 
-    fn get_value_ptr(&self) -> PageID {
-        // SAFETY: The cell is guaranteed to be at least 10 bytes long, and the child pointer is at offset 0.
-        unsafe {
-            let cell_ptr = self.cell.as_ptr().add(CHILD_PTR_OFFSET);
-            let page_id = read_u64_le_unsafe(cell_ptr);
-            PageID::from(page_id)
-        }
+    fn get_child_ptr(&self) -> PageID {
+        // TODO: Fix the error returning here
+        // TODO: Think about any checks specific to internal page cells we need to
+        self.inner.get_value_ptr().ok().unwrap()
     }
+
+    fn get_prefix(&self) -> u16 {
+        // TODO: Fix the error returning here
+        // TODO: Think about any checks specific to internal page cells we need to
+        self.inner.get_prefix().ok().unwrap()
+    }
+}
+
+// TODO: Fix the lifetimes and field names
+pub(super) struct InternalCellMut<'a, 'page> {
+    inner: IndexCellMut<'a, 'page>,
 }
 
 #[cfg(test)]

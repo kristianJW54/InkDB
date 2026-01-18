@@ -32,8 +32,8 @@ impl From<u64> for PageID {
 
 // TODO May need to implement PageID resolver for pointer address and offset from page id
 
-#[derive(Eq, Hash, PartialEq, Debug)]
-pub(crate) struct SlotID(pub u16);
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
+pub(crate) struct SlotEntry(pub u16);
 
 #[inline]
 pub(crate) fn read_u16_le(bytes: &[u8]) -> u16 {
@@ -209,6 +209,7 @@ const DELETED: u8 = 0b000_0010;
 const HALF_DELETED: u8 = 0b000_0100;
 const INCOMPLETE_SPLIT: u8 = 0b000_1000;
 const HAS_OVERFLOW: u8 = 0b001_0000;
+const PREFIX_COMPRESSED: u8 = 0b010_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PageStates {
@@ -218,6 +219,7 @@ pub(crate) enum PageStates {
     HalfDeleted,
     IncompleteSplit,
     HasOverflow,
+    PrefixCompressed,
 }
 
 impl PageStates {
@@ -228,6 +230,7 @@ impl PageStates {
             HALF_DELETED => Self::HalfDeleted,
             INCOMPLETE_SPLIT => Self::IncompleteSplit,
             HAS_OVERFLOW => Self::HasOverflow,
+            PREFIX_COMPRESSED => Self::PrefixCompressed,
             _ => return None,
         })
     }
@@ -239,6 +242,7 @@ impl PageStates {
             Self::HalfDeleted => HALF_DELETED,
             Self::IncompleteSplit => INCOMPLETE_SPLIT,
             Self::HasOverflow => HAS_OVERFLOW,
+            Self::PrefixCompressed => PREFIX_COMPRESSED,
             _ => return NO_STATE,
         }
     }
@@ -313,13 +317,20 @@ impl From<u8> for IndexLevel {
 
 // TODO - Have mod tests for all files within
 
-#[test]
-fn test_bits() {
-    let state_1 = PageStates::FastParent;
-    let state_2 = PageStates::HasOverflow;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut page_flags = PageFlags::new(state_1);
-    page_flags.set_flag(state_2);
+    #[test]
+    fn test_bits() {
+        let state_1 = PageStates::FastParent;
+        let state_2 = PageStates::HasOverflow;
 
-    println!("page_flags = {:?}", page_flags.extract_all_flags());
+        let mut page_flags = PageFlags::new(state_1);
+        page_flags.set_flag(state_2);
+
+        println!("page_flags = {:?}", page_flags.extract_all_flags());
+    }
+
+    // TODO: Write tests for PageKind and PageType to clear up the API
 }

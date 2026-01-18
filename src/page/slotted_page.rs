@@ -695,7 +695,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: u16) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotEntry) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -705,7 +705,7 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::EmptySlotDir);
         }
 
-        let idx = slot_id;
+        let idx = slot_id.0;
 
         if idx >= slot_count {
             return Err(PageError::SlotIDOutOfBounds);
@@ -780,7 +780,11 @@ impl<'a> SlottedPageMut<'a> {
         cell
     }
 
-    pub(super) fn transfer(&mut self, slot_index: SlotID, page: &mut SlottedPageMut) -> Result<()> {
+    pub(super) fn transfer(
+        &mut self,
+        slot_index: SlotEntry,
+        page: &mut SlottedPageMut,
+    ) -> Result<()> {
         // First validate the slot range is within the page slot array
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count() as u16;
@@ -870,6 +874,12 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     // -----------------------
+    // Unsafe Methods
+
+    #[inline(always)]
+    pub(super) unsafe fn as_ptr(&self) -> *const u8 {
+        self.bytes.as_ptr()
+    }
 
     // Header + Meta methods
 
@@ -1011,7 +1021,7 @@ impl<'a> SlottedPageRef<'a> {
     // Cell Methods
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotEntry) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -1225,7 +1235,7 @@ impl<'a> Iterator for SlotDirIter<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(super) struct SlotEntry {
     offset: u16,
     length: u16,
@@ -1456,7 +1466,8 @@ mod tests {
             Ok(p) => {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
-                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
+                let str =
+                    String::from_utf8_lossy(sp.cell_slice_from_id(SlotEntry(0)).ok().unwrap());
                 assert_eq!(str, "test  test");
             }
             Err(e) => {
@@ -1468,7 +1479,8 @@ mod tests {
             Ok(p) => {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
-                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
+                let str =
+                    String::from_utf8_lossy(sp.cell_slice_from_id(SlotEntry(0)).ok().unwrap());
                 assert_eq!(str, "test  test");
             }
             Err(e) => {
@@ -1487,7 +1499,7 @@ mod tests {
 
         // Now we want to call transfer
         // We are only transferring two items over to the new page - the test key will not be in the same space but the slot entry should maintain order
-        let result = sp.transfer(SlotID(144), &mut sp2);
+        let result = sp.transfer(SlotEntry(144), &mut sp2);
         match result {
             Ok(_) => {
                 for (i, se) in sp2.slot_dir_ref().iter().enumerate() {
