@@ -484,7 +484,7 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::NotEnoughFreeSpace);
         }
 
-        // TODO ----------- IF High key we need to prepand at index 1
+        // TODO: IF High key we need to prepand at index 1
 
         debug_assert!(fs + ENTRY_SIZE_U16 <= PAGE_SIZE_U16);
         debug_assert!(fs >= HEADER_SIZE_U16);
@@ -664,6 +664,7 @@ impl<'a> SlottedPageMut<'a> {
         }
 
         let cell_start_offset = free_end - cell.len() as u16;
+        println!("Cell start offset: {}", cell_start_offset);
 
         assert!(cell.len() <= u16::MAX as usize);
         assert!(cell_start_offset <= u16::MAX);
@@ -695,7 +696,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: SlotEntry) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: u16) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -705,7 +706,7 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::EmptySlotDir);
         }
 
-        let idx = slot_id.0;
+        let idx = slot_id;
 
         if idx >= slot_count {
             return Err(PageError::SlotIDOutOfBounds);
@@ -731,10 +732,7 @@ impl<'a> SlottedPageMut<'a> {
         }
     }
 
-    pub(super) fn cell_and_entry_from_index(
-        &self,
-        slot_index: u16,
-    ) -> Result<(SlotEntryRef, CellRef)> {
+    fn cell_and_entry_from_index(&self, slot_index: u16) -> Result<(SlotEntryRef, CellRef)> {
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count() as usize;
 
@@ -780,23 +778,19 @@ impl<'a> SlottedPageMut<'a> {
         cell
     }
 
-    pub(super) fn transfer(
-        &mut self,
-        slot_index: SlotEntry,
-        page: &mut SlottedPageMut,
-    ) -> Result<()> {
+    pub(super) fn transfer(&mut self, slot_index: u16, page: &mut SlottedPageMut) -> Result<()> {
         // First validate the slot range is within the page slot array
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count() as u16;
 
-        assert!(slot_index.0 <= slot_count);
+        assert!(slot_index <= slot_count);
 
         // Now we need to transfer the cells to the given page first to ensure this succeeds before we remove our own bytes
         // First we must validate the passed page is ready to receive the bytes - but we don't try to fix, we only want to make sure we are able to
         // do our job
         assert_eq!(page.memory_used_non_frag(), 0);
 
-        self.remove_slot_index_range(slot_index.0..slot_count, |s, se, cell| {
+        self.remove_slot_index_range(slot_index..slot_count, |_, _, cell| {
             // Invariants:
             // - We know we have a blank page with 0 memory and do not need to make any more assumption, we can stay naive and work on bytes
             // - We know that the slot array is ordered already and can be straight copied
@@ -1021,7 +1015,7 @@ impl<'a> SlottedPageRef<'a> {
     // Cell Methods
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: SlotEntry) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -1071,10 +1065,7 @@ impl<'a> SlottedPageRef<'a> {
         cell
     }
 
-    pub(super) fn cell_and_entry_from_index(
-        &self,
-        slot_index: u16,
-    ) -> Result<(SlotEntryRef, CellRef)> {
+    fn cell_and_entry_from_index(&self, slot_index: u16) -> Result<(SlotEntryRef, CellRef)> {
         let slot_dir = self.slot_dir_ref();
         let slot_count = slot_dir.slot_count() as usize;
 
@@ -1164,6 +1155,21 @@ impl<'a> SlotRef<'a> {
     pub(super) fn iter(&self) -> SlotDirIter<'a> {
         SlotDirIter::new(self.ptr, self.size)
     }
+
+    pub(super) fn get_slot_entry(&self, idx: SlotID) -> Result<SlotEntry> {
+        assert!(idx.0 < HEADER_SIZE_U16);
+        println!("idx.0 {:?} size {:?}", idx.0, self.size);
+        assert!(idx.0 <= self.size);
+
+        // Get the entry index
+        let offset_index = (idx.0 * ENTRY_SIZE_U16) as usize;
+        unsafe {
+            let b_ptr = self.ptr.add(offset_index);
+            let offset = read_u16_le_unsafe(b_ptr);
+            let length = read_u16_le_unsafe(b_ptr.add(2));
+            Ok(SlotEntry::new(offset, length))
+        }
+    }
 }
 
 pub(super) struct SlotDirMut<'a> {
@@ -1247,6 +1253,19 @@ impl SlotEntry {
     }
 }
 
+// TODO: This needs testing
+impl From<&'_ [u8]> for SlotEntry {
+    fn from(bytes: &[u8]) -> Self {
+        unsafe {
+            let b_ptr = bytes.as_ptr();
+            let offset = read_u16_le_unsafe(b_ptr);
+            let length = read_u16_le_unsafe(b_ptr.add(2));
+            SlotEntry { offset, length }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct SlotEntryRef<'a>(&'a [u8]);
 pub(super) struct CellRef<'a>(&'a [u8]);
 
@@ -1466,8 +1485,7 @@ mod tests {
             Ok(p) => {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
-                let str =
-                    String::from_utf8_lossy(sp.cell_slice_from_id(SlotEntry(0)).ok().unwrap());
+                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
                 assert_eq!(str, "test  test");
             }
             Err(e) => {
@@ -1479,8 +1497,7 @@ mod tests {
             Ok(p) => {
                 // We have inserted a test message at index 0 of the slot_array test fetching this
                 let sp = SlottedPageRef::from_bytes(&p);
-                let str =
-                    String::from_utf8_lossy(sp.cell_slice_from_id(SlotEntry(0)).ok().unwrap());
+                let str = String::from_utf8_lossy(sp.cell_slice_from_id(SlotID(0)).ok().unwrap());
                 assert_eq!(str, "test  test");
             }
             Err(e) => {
@@ -1499,7 +1516,7 @@ mod tests {
 
         // Now we want to call transfer
         // We are only transferring two items over to the new page - the test key will not be in the same space but the slot entry should maintain order
-        let result = sp.transfer(SlotEntry(144), &mut sp2);
+        let result = sp.transfer(144, &mut sp2);
         match result {
             Ok(_) => {
                 for (i, se) in sp2.slot_dir_ref().iter().enumerate() {

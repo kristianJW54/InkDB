@@ -1,7 +1,7 @@
 use crate::buffer::buffer_manager::BufferManagerError;
 use crate::buffer::page_frame::PageFrameError;
 use crate::operation::op_ctx::OpCtx;
-use crate::page::internal_page::{IndexPageError, IndexPageRef};
+use crate::page::internal_page::{InternalPageError, InternalPageMut, InternalPageRef};
 use crate::page::{IndexLevel, PageID, PageKind, SlottedPageMut, SlottedPageRef};
 
 // Layers
@@ -30,14 +30,14 @@ pub(super) type Result<T> = std::result::Result<T, BTreeInnerError>;
 pub(super) enum BTreeInnerError {
     // Define error variants here
     BufferManagerError(BufferManagerError),
-    IndexPageError(IndexPageError),
+    InternalPageError(InternalPageError),
     PageFrameError(PageFrameError),
     TraverseError(PageID, Option<PageKind>), // Would want to format this error message
 }
 
-impl From<IndexPageError> for BTreeInnerError {
-    fn from(err: IndexPageError) -> Self {
-        BTreeInnerError::IndexPageError(err)
+impl From<InternalPageError> for BTreeInnerError {
+    fn from(err: InternalPageError) -> Self {
+        BTreeInnerError::InternalPageError(err)
     }
 }
 
@@ -80,7 +80,7 @@ impl<'blink> BInner<'blink> {
                     // We are still in internal and so must traverse down
                     page_id = page_handle.with_read(|page| {
                         let sp = SlottedPageRef::from_bytes(page);
-                        let internal_page = IndexPageRef::from_slotted_page(sp);
+                        let internal_page = InternalPageRef::from_slotted_page(sp);
                         internal_page.find_child_ptr(key)
                     })?;
 
@@ -117,7 +117,7 @@ impl<'blink> BInner<'blink> {
                 PageKind::IndexInternal => {
                     let child_ptr = page_handle.with_read(|page| {
                         let sp = SlottedPageRef::from_bytes(page);
-                        let internal = IndexPageRef::from_slotted_page(sp);
+                        let internal = InternalPageRef::from_slotted_page(sp);
                         internal.find_child_ptr(key)
                     })?;
                     page_id = child_ptr;

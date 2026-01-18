@@ -1,4 +1,4 @@
-use crate::page::internal_page::IndexPageError;
+use crate::page::internal_page::InternalPageError;
 use crate::page::{PageID, PageKind, RawPage};
 use crate::page::{SlottedPageMut, SlottedPageRef};
 use std::ops::{Deref, DerefMut};
@@ -10,12 +10,12 @@ pub(crate) type Result<T> = std::result::Result<T, PageFrameError>;
 
 #[derive(Debug)]
 pub(crate) enum PageFrameError {
-    IndexPageError(IndexPageError),
+    IndexPageError(InternalPageError),
     InvalidPageKind,
 }
 
-impl From<IndexPageError> for PageFrameError {
-    fn from(err: IndexPageError) -> Self {
+impl From<InternalPageError> for PageFrameError {
+    fn from(err: InternalPageError) -> Self {
         PageFrameError::IndexPageError(err)
     }
 }
@@ -151,13 +151,13 @@ impl<'a> DerefMut for FrameWriteGuard<'a> {
 mod tests {
     use super::*;
     use crate::page::SlottedPageMut;
-    use crate::page::internal_page::{IndexPageMut, IndexPageRef};
+    use crate::page::internal_page::{InternalPageMut, InternalPageRef};
 
     #[test]
     fn get_internal_index_page() {
         let mut raw_page: RawPage = [0u8; 4096];
         let sp = SlottedPageMut::init_new(&mut raw_page, PageKind::Undefined.into());
-        let mut index_internal = IndexPageMut::from_slotted_page(sp);
+        let mut index_internal = InternalPageMut::from_slotted_page(sp);
 
         index_internal.set_page_type(PageKind::IndexInternal);
         println!("Internal kind = {:?}", index_internal.kind());
@@ -167,7 +167,7 @@ mod tests {
 
         frame
             .with_read(|rp| {
-                let ref_guard = IndexPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp));
+                let ref_guard = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp));
                 println!("Page Kind {:?}", ref_guard.kind());
                 Ok::<(), PageFrameError>(())
             })

@@ -10,6 +10,7 @@ pub(crate) use slotted_page::{
 
 pub(crate) type RawPage = [u8; 4096];
 
+// TODO: May need to implement PageID resolver for pointer address and offset from page id
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub struct PageID(pub u64);
 
@@ -30,10 +31,14 @@ impl From<u64> for PageID {
     }
 }
 
-// TODO May need to implement PageID resolver for pointer address and offset from page id
-
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
-pub(crate) struct SlotEntry(pub u16);
+pub(crate) struct SlotID(pub u16);
+
+impl From<u16> for SlotID {
+    fn from(value: u16) -> Self {
+        Self(value)
+    }
+}
 
 #[inline]
 pub(crate) fn read_u16_le(bytes: &[u8]) -> u16 {
