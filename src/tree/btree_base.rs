@@ -1,7 +1,7 @@
 use crate::buffer::buffer_manager::BufferManagerError;
 use crate::buffer::page_frame::PageFrameError;
 use crate::operation::op_ctx::OpCtx;
-use crate::page::internal_page::{InternalPageError, InternalPageMut, InternalPageRef};
+use crate::page::internal_page::{InternalPageError, InternalPageRef};
 use crate::page::{IndexLevel, PageID, PageKind, SlottedPageMut, SlottedPageRef};
 
 // Layers
@@ -30,14 +30,14 @@ pub(super) type Result<T> = std::result::Result<T, BTreeInnerError>;
 pub(super) enum BTreeInnerError {
     // Define error variants here
     BufferManagerError(BufferManagerError),
-    InternalPageError(InternalPageError),
+    IndexPageError(InternalPageError),
     PageFrameError(PageFrameError),
     TraverseError(PageID, Option<PageKind>), // Would want to format this error message
 }
 
 impl From<InternalPageError> for BTreeInnerError {
     fn from(err: InternalPageError) -> Self {
-        BTreeInnerError::InternalPageError(err)
+        BTreeInnerError::IndexPageError(err)
     }
 }
 
