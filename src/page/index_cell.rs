@@ -1,9 +1,10 @@
+use super::internal_page::InternalPageError;
 use super::slotted_page::SlotEntry;
 use super::{
     ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, PageID, SlottedPageMut, SlottedPageRef,
     read_u16_le_unsafe, read_u64_le_unsafe, write_u16_le_unsafe,
 };
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::slice::from_raw_parts;
 //
 // Similar to PostGres PivotCell where both internal pages and leaf pages share the same cell structure
@@ -20,6 +21,7 @@ use std::slice::from_raw_parts;
 
 pub(super) type Result<T> = std::result::Result<T, IndexCellError>;
 
+#[derive(Debug, Clone)]
 pub(super) enum IndexCellError {
     PageError(PageError),
     InvalidCellSize,
@@ -66,25 +68,31 @@ impl Deref for IndexCellOwned {
     }
 }
 
+impl DerefMut for IndexCellOwned {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 // TODO: Finish implementations for IndexCellRef and IndexCellMut
 
 // IndexCellRef holds a reference to the slotted page under a index page lifetime, it defines methods and behaviours only for referencing cell data
 // within the slotted page
 #[derive(Debug)]
-pub(super) struct IndexCellRef<'a, 'page> {
-    cell: &'a SlottedPageRef<'page>,
+pub(super) struct IndexCellRef<'page> {
+    cell: SlottedPageRef<'page>,
     slot_entry: SlotEntry,
 }
 
-impl<'a, 'page> IndexCellRef<'a, 'page> {
-    pub(super) fn from(page: &'a SlottedPageRef<'page>, slot: SlotEntry) -> Self {
+impl<'page> IndexCellRef<'page> {
+    pub(super) fn from(page: SlottedPageRef<'page>, slot: SlotEntry) -> Self {
         IndexCellRef {
             cell: page,
             slot_entry: slot,
         }
     }
 
-    pub(super) fn get_key(&self) -> Result<&[u8]> {
+    pub(super) fn get_key(&self) -> &[u8] {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the key data is at offset 10.
@@ -94,27 +102,27 @@ impl<'a, 'page> IndexCellRef<'a, 'page> {
 
             let key_ptr = cell_ptr.add(KEY_DATA_OFFSET);
 
-            return Ok(from_raw_parts(key_ptr, key_len));
+            return from_raw_parts(key_ptr, key_len);
         }
     }
-    pub(super) fn get_value_ptr(&self) -> Result<PageID> {
+    pub(super) fn get_value_ptr(&self) -> PageID {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the child pointer is at offset 0.
         unsafe {
             let cell_ptr = cell.as_ptr().add(CHILD_PTR_OFFSET);
             let page_id = read_u64_le_unsafe(cell_ptr);
-            Ok(PageID::from(page_id))
+            PageID::from(page_id)
         }
     }
 
-    pub(super) fn get_prefix(&self) -> Result<u16> {
+    pub(super) fn get_prefix(&self) -> u16 {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the prefix is at offset 8.
         unsafe {
             let cell_ptr = cell.as_ptr().add(PREFIX_OFFSET);
-            Ok(read_u16_le_unsafe(cell_ptr))
+            read_u16_le_unsafe(cell_ptr)
         }
     }
 }
@@ -132,7 +140,7 @@ impl<'a, 'page> IndexCellMut<'a, 'page> {
         }
     }
 
-    pub(super) fn get_key(&self) -> Result<&[u8]> {
+    pub(super) fn get_key(&self) -> &[u8] {
         let cell = self.cell.cell_slice_from_entry(self.slot);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the key data is at offset 10.
@@ -144,27 +152,27 @@ impl<'a, 'page> IndexCellMut<'a, 'page> {
 
             debug_assert!(KEY_DATA_OFFSET + key_len <= cell.len());
 
-            return Ok(from_raw_parts(key_ptr, key_len));
+            return from_raw_parts(key_ptr, key_len);
         }
     }
-    pub(super) fn get_value_ptr(&self) -> Result<PageID> {
+    pub(super) fn get_value_ptr(&self) -> PageID {
         let cell = self.cell.cell_slice_from_entry(self.slot);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the child pointer is at offset 0.
         unsafe {
             let cell_ptr = cell.as_ptr().add(CHILD_PTR_OFFSET);
             let page_id = read_u64_le_unsafe(cell_ptr);
-            Ok(PageID::from(page_id))
+            PageID::from(page_id)
         }
     }
 
-    pub(super) fn get_prefix(&self) -> Result<u16> {
+    pub(super) fn get_prefix(&self) -> u16 {
         let cell = self.cell.cell_slice_from_entry(self.slot);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the prefix is at offset 8.
         unsafe {
             let cell_ptr = cell.as_ptr().add(PREFIX_OFFSET);
-            Ok(read_u16_le_unsafe(cell_ptr))
+            read_u16_le_unsafe(cell_ptr)
         }
     }
 

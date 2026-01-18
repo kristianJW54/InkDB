@@ -102,6 +102,11 @@ impl<'a> SlottedPageMut<'a> {
         Self { bytes: bytes }
     }
 
+    // TODO: Can we remove duplicate ref methods in mut now?
+    pub(crate) fn as_ref(&'a self) -> SlottedPageRef<'a> {
+        SlottedPageRef::from_bytes(&*self.bytes)
+    }
+
     pub(crate) fn wipe_page(&mut self) {
         self.bytes.fill(0);
     }
@@ -376,6 +381,11 @@ impl<'a> SlottedPageMut<'a> {
         unsafe {
             write_u16_le_unsafe(self.bytes.as_mut_ptr().add(SPECIAL_OFFSET), offset);
         }
+    }
+
+    #[inline(always)]
+    pub(super) fn get_flags(&self) -> u8 {
+        self.bytes[FLAGS_OFFSET]
     }
 
     #[inline]
@@ -696,7 +706,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
-    pub(super) fn cell_slice_from_id(&self, slot_id: u16) -> Result<&'_ [u8]> {
+    pub(super) fn cell_slice_from_id(&self, slot_id: SlotID) -> Result<&'_ [u8]> {
         // We want to return raw bytes here because we are not concerned with how they are interpreted
         // it is up to the type layers who request the bytes to parse and process.
 
@@ -706,7 +716,7 @@ impl<'a> SlottedPageMut<'a> {
             return Err(PageError::EmptySlotDir);
         }
 
-        let idx = slot_id;
+        let idx = slot_id.0;
 
         if idx >= slot_count {
             return Err(PageError::SlotIDOutOfBounds);
@@ -857,7 +867,7 @@ impl<'a> SlottedPageMut<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct SlottedPageRef<'a> {
     bytes: &'a RawPage,
 }
@@ -1398,7 +1408,7 @@ mod tests {
         let cell = "I am a cell".as_bytes();
 
         match page.insert_cell(cell, 0) {
-            Ok(_) => match page.cell_slice_from_id(0) {
+            Ok(_) => match page.cell_slice_from_id(SlotID(0)) {
                 Ok(cell) => {
                     let string = str::from_utf8(cell).unwrap();
                     assert_eq!(string.as_bytes(), cell);

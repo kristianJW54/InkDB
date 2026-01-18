@@ -150,8 +150,10 @@ impl<'a> DerefMut for FrameWriteGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::SlottedPageMut;
-    use crate::page::internal_page::{InternalPageMut, InternalPageRef};
+    use crate::page::{
+        SlottedPageMut,
+        internal_page::{InternalPageMut, InternalPageRef},
+    };
 
     #[test]
     fn get_internal_index_page() {

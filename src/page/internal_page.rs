@@ -1,20 +1,20 @@
 //------------------------- Page specific types ------------------------------//
 
-// We want to look at fences - look at prefix compression and look ahead
-
 use super::index_cell::IndexCellOwned;
 use super::index_cell::{IndexCellMut, IndexCellRef};
 use super::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16};
-use page::slotted_page::SlotEntry;
-// Page types interpret over the slotted page for their type
+use crate::page::prefix_compression::find_prefix_offset;
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlotID, SlottedPageMut, SlottedPageRef,
     read_u16_le_unsafe,
 };
-use crate::page::{PageID, PageKind, PageType, read_u64_le_unsafe};
+use crate::page::{PageFlags, PageID, PageKind, PageStates, PageType, read_u64_le_unsafe};
 use page::IndexLevel;
+use page::slotted_page::SlotEntry;
 use std::ops::Deref;
+use std::path::Prefix;
 use std::slice::from_raw_parts;
+use std::u16::MAX;
 
 pub(crate) type Result<T> = std::result::Result<T, InternalPageError>;
 
@@ -47,10 +47,7 @@ impl<'page> InternalPageMut<'page> {
     }
 
     // TODO: Check if this is correct
-    pub(super) fn cell_mut_from_slot_entry(
-        &'page mut self,
-        se: SlotEntry,
-    ) -> InternalCellMut<'_, 'page> {
+    pub(super) fn cell_mut_from_slot_entry(&mut self, se: SlotEntry) -> InternalCellMut<'_, 'page> {
         InternalCellMut {
             inner: IndexCellMut::from(&mut self.page, se),
         }
@@ -120,25 +117,57 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
-    pub(crate) fn try_insert(
-        &mut self,
-        key: &[u8],
-        prefix_offset: u16,
-        child_ptr: PageID,
-    ) -> Result<()> {
+    // TODO: Test and see if returning R is ok here
+    pub(super) fn with_first_key<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&[u8]),
+    {
+        let page_ref = self.page.as_ref();
+
+        if self.has_right_sibling() {
+            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(1))?;
+            let cell = IndexCellRef::from(page_ref, se);
+            Ok(f(cell.get_key()))
+        } else {
+            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(0))?;
+            let cell = IndexCellRef::from(page_ref, se);
+            Ok(f(cell.get_key()))
+        }
+    }
+
+    pub(super) fn get_first_key(&self) -> Result<InternalCellRef<'_>> {
+        let page_ref = self.page.as_ref();
+
+        if self.has_right_sibling() {
+            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(1))?;
+            let cell = InternalCellRef {
+                inner: IndexCellRef::from(page_ref, se),
+            };
+            Ok(cell)
+        } else {
+            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(0))?;
+            let cell = InternalCellRef {
+                inner: IndexCellRef::from(page_ref, se),
+            };
+            Ok(cell)
+        }
+    }
+
+    pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
+        // TODO: Do we want to do prefix finding here? or pass in a prefix offset?
+
+        // Find prefix offset and slice key
+        let mut prefix_offset: u16 = 0;
+        self.with_first_key(|first_key| {
+            let offset = find_prefix_offset(key, first_key);
+            debug_assert!(offset <= std::u16::MAX as usize);
+            prefix_offset = offset as u16;
+        })?;
+
         // Encode cell
-        let cell = IndexCellOwned::new(key, prefix_offset, child_ptr);
-
-        // Fast path memory check
-        let contiguous = self.page.free_contiguous_space();
-        let frag = self.page.free_fragmented_space();
-
-        // We need to figure logic here - do we want to return ctx if no contiguous and let b-tree call back in for frag?
-        // Or do a frag check and return ctx with error for tree either can_compact or must split
+        let cell = IndexCellOwned::new(key, 0, child_ptr);
 
         // We can check if we can insert the cell - if we error we can propagate the InsertErrorCtx back up to the tree to decide
-        // If we are ok then we can find an insert index and try to insert the cell
-
         self.page.check_contiguous_insert(cell.deref())?;
 
         // Now we find the insert index
@@ -166,13 +195,13 @@ impl<'page> InternalPageRef<'page> {
         Self { page }
     }
 
-    pub(super) fn cell_from_slot_entry(&'_ self, se: SlotEntry) -> InternalCellRef<'_, 'page> {
+    pub(super) fn cell_from_slot_entry(&'_ self, se: SlotEntry) -> InternalCellRef<'page> {
         InternalCellRef {
-            inner: IndexCellRef::from(&self.page, se),
+            inner: IndexCellRef::from(self.page, se),
         }
     }
 
-    pub(super) fn cell_from_slot_id(&'_ self, idx: SlotID) -> Result<InternalCellRef<'_, 'page>> {
+    pub(super) fn cell_from_slot_id(&'_ self, idx: SlotID) -> Result<InternalCellRef<'page>> {
         let se = self.page.slot_dir_ref().get_slot_entry(idx)?;
         Ok(self.cell_from_slot_entry(se))
     }
@@ -230,6 +259,10 @@ impl<'page> InternalPageRef<'page> {
         self.get_page_type().page_kind()
     }
 
+    pub(crate) fn flags(&self) -> PageFlags {
+        PageFlags::from(self.page.get_flags())
+    }
+
     pub(super) fn level(&self) -> IndexLevel {
         IndexLevel::from(self.get_page_type().page_sub_type())
     }
@@ -248,32 +281,31 @@ impl<'page> InternalPageRef<'page> {
 //------------------ Internal Cells  ---------------------//
 
 #[derive(Debug)]
-pub(super) struct InternalCellRef<'a, 'page> {
-    inner: IndexCellRef<'a, 'page>,
+pub(super) struct InternalCellRef<'page> {
+    inner: IndexCellRef<'page>,
     // May want things like child_ptr or key unless we copy out and return on method call (think about why
     // we would want to store anything)
 }
 
-impl<'a, 'page> InternalCellRef<'a, 'page> {
+impl<'page> InternalCellRef<'page> {
     pub(super) fn get_key(&self) -> &[u8] {
         // TODO: Fix the error returning here
-        self.inner.get_key().ok().unwrap()
+        self.inner.get_key()
     }
 
     pub(super) fn get_child_ptr(&self) -> PageID {
         // TODO: Fix the error returning here
         // TODO: Think about any checks specific to internal page cells we need to
-        self.inner.get_value_ptr().ok().unwrap()
+        self.inner.get_value_ptr()
     }
 
     pub(super) fn get_prefix(&self) -> u16 {
         // TODO: Fix the error returning here
         // TODO: Think about any checks specific to internal page cells we need to
-        self.inner.get_prefix().ok().unwrap()
+        self.inner.get_prefix()
     }
 }
 
-// TODO: Fix the lifetimes and field names
 pub(super) struct InternalCellMut<'a, 'page> {
     inner: IndexCellMut<'a, 'page>,
 }
@@ -281,19 +313,19 @@ pub(super) struct InternalCellMut<'a, 'page> {
 impl<'a, 'page> InternalCellMut<'a, 'page> {
     fn get_key(&self) -> &[u8] {
         // TODO: Fix the error returning here
-        self.inner.get_key().ok().unwrap()
+        self.inner.get_key()
     }
 
     fn get_child_ptr(&self) -> PageID {
         // TODO: Fix the error returning here
         // TODO: Think about any checks specific to internal page cells we need to
-        self.inner.get_value_ptr().ok().unwrap()
+        self.inner.get_value_ptr()
     }
 
     fn get_prefix(&self) -> u16 {
         // TODO: Fix the error returning here
         // TODO: Think about any checks specific to internal page cells we need to
-        self.inner.get_prefix().ok().unwrap()
+        self.inner.get_prefix()
     }
 
     // TODO: Make set_prefix method() once we have one on IndexCellMut
@@ -302,7 +334,7 @@ impl<'a, 'page> InternalCellMut<'a, 'page> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::RawPage;
+    use crate::page::{PageStates, RawPage};
 
     // TODO: Define assertions for the test
     #[test]
@@ -315,8 +347,7 @@ mod tests {
         );
 
         // Add a test cell
-
-        let cell = IndexCellOwned::new("hello i am a test".as_bytes(), 1, PageID(0));
+        let cell = IndexCellOwned::new("hello there".as_bytes(), 1, PageID(0));
         sp.insert_cell(cell.deref(), 0).ok().unwrap();
 
         drop(sp);
@@ -326,6 +357,27 @@ mod tests {
         let internal_cell = internal.cell_from_slot_id(SlotID(0)).ok().unwrap();
         let key = internal_cell.get_key();
         let result = String::from_utf8_lossy(key);
-        println!("Key: {}", result);
+        assert_eq!(result, "hello there");
     }
+
+    #[test]
+    fn prefix_state_setting() {
+        let mut page: RawPage = [0u8; PAGE_SIZE];
+
+        let mut sp = SlottedPageMut::init_new(
+            &mut page,
+            PageType::new(PageKind::IndexInternal as u8, 0).into(),
+        );
+
+        sp.set_flags(PageStates::PrefixCompressed.bit());
+
+        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
+
+        assert_eq!(
+            internal.flags().has_flag(PageStates::PrefixCompressed),
+            true
+        );
+    }
+
+    // TODO: Define a test to insert a prefix compressed key using try_insert()
 }
