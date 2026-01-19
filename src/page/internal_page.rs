@@ -3,14 +3,16 @@
 use super::index_cell::IndexCellOwned;
 use super::index_cell::{IndexCellMut, IndexCellRef};
 use super::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16};
+use crate::index::index_key_types::CompareFn;
 use crate::page::prefix_compression::find_prefix_offset;
 use crate::page::{
-    self, ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlotID, SlottedPageMut, SlottedPageRef,
-    read_u16_le_unsafe,
+    self, ENTRY_SIZE, HEADER_SIZE, InsertCtx, PAGE_SIZE, PageError, SlotID, SlottedPageMut,
+    SlottedPageRef, read_u16_le_unsafe,
 };
 use crate::page::{PageFlags, PageID, PageKind, PageStates, PageType, read_u64_le_unsafe};
 use page::IndexLevel;
 use page::slotted_page::SlotEntry;
+use std::cmp::Ordering;
 use std::ops::Deref;
 use std::path::Prefix;
 use std::slice::from_raw_parts;
@@ -24,6 +26,8 @@ pub(crate) enum InternalPageError {
     InvalidPageType,
     InvalidLevel,
     ChildNotFound,
+    InsertionIndexNotFound,
+    TryInsertionFailed,
 }
 
 impl From<PageError> for InternalPageError {
@@ -135,6 +139,26 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
+    fn find_insertion_index(&self, key: &[u8], ordering: CompareFn) -> Result<SlotID> {
+        // TODO: We need to implement a binary search on slotted page and use it above a threshold for slot_count
+
+        let page_ref = self.page.as_ref();
+
+        for (i, se) in page_ref.slot_dir_ref().iter().enumerate() {
+            let cell = IndexCellRef::from(page_ref, se);
+            match ordering(cell.get_key(), &key) {
+                Ordering::Less => continue,
+                Ordering::Equal => {
+                    // FIXME: For now this is ok but we may want to handle duplicates a different way or error on this
+                    return Ok(SlotID(i as u16));
+                }
+                Ordering::Greater => return Ok(SlotID(i as u16)),
+            }
+        }
+
+        Ok(SlotID(self.page.get_slot_count() as u16))
+    }
+
     pub(super) fn get_first_key(&self) -> Result<InternalCellRef<'_>> {
         let page_ref = self.page.as_ref();
 
@@ -153,9 +177,13 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
-    pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
-        // TODO: Do we want to do prefix finding here? or pass in a prefix offset?
-
+    // TODO: We need to store an ordering ctx from the tree in the page so we can access it without passing it through function signatures
+    pub(crate) fn try_insert(
+        &mut self,
+        key: &[u8],
+        child_ptr: PageID,
+        ordering: CompareFn,
+    ) -> Result<()> {
         // Find prefix offset and slice key
         let mut prefix_offset: u16 = 0;
         self.with_first_key(|first_key| {
@@ -164,19 +192,36 @@ impl<'page> InternalPageMut<'page> {
             prefix_offset = offset as u16;
         })?;
 
-        // Encode cell
-        let cell = IndexCellOwned::new(key, 0, child_ptr);
+        // If we have a prefix offset we can compress the key
+        if let Some(key) = key.get(prefix_offset as usize..) {
+            let cell = IndexCellOwned::new(key, prefix_offset, child_ptr);
 
-        // We can check if we can insert the cell - if we error we can propagate the InsertErrorCtx back up to the tree to decide
-        self.page.check_contiguous_insert(cell.deref())?;
+            // We check if we can insert before finding an index to insert into
+            // If we error we can propagate the InsertErrorCtx back up to the tree to decide
+            self.page.check_contiguous_insert(cell.deref())?;
+            //
+            // Now we find the insert index
+            let insertion_index = self.find_insertion_index(key, ordering)?;
 
-        // Now we find the insert index
-        // - Here
+            // Can insert now
+            let ctx = InsertCtx {
+                cell,
+                value_ptr: child_ptr.0,
+                prefix_offset,
+                insert_index: insertion_index.0,
+            };
+            self.insert(ctx)
+        } else {
+            // TODO: Need to have more robust error handling here
+            Err(InternalPageError::TryInsertionFailed)
+        }
+    }
 
+    fn insert(&mut self, ctx: InsertCtx) -> Result<()> {
+        //
         // We can try to allocate a cell - if we get an error, we can propagate the InsertErrorCtx back to the tree for it decide on a strategy
-        let entry = self.page.insert_cell(cell.deref(), 0)?;
-
-        todo!("Finish")
+        let entry = self.page.insert_cell(ctx.cell.deref(), 0)?;
+        todo!()
     }
 }
 
@@ -380,4 +425,48 @@ mod tests {
     }
 
     // TODO: Define a test to insert a prefix compressed key using try_insert()
+    #[test]
+    fn insert_prefix_compressed_key() {
+        let mut page: RawPage = [0u8; PAGE_SIZE];
+        let mut sp = SlottedPageMut::init_new(
+            &mut page,
+            PageType::new(PageKind::IndexInternal as u8, 0).into(),
+        );
+
+        sp.set_flags(PageStates::PrefixCompressed.bit());
+
+        // Get internal page and insert a standard key so another key can be compressed against
+    }
+
+    #[test]
+    fn find_insert_index() {
+        let mut page: RawPage = [0u8; PAGE_SIZE];
+        let mut sp = SlottedPageMut::init_new(&mut page, PageKind::IndexInternal as u8);
+        sp.set_flags(PageStates::PrefixCompressed.bit());
+
+        // Insert [a, b, d, e]
+        sp.insert_cell_append(IndexCellOwned::new("a".as_bytes(), 0, PageID(1)).deref())
+            .ok()
+            .unwrap();
+        sp.insert_cell_append(IndexCellOwned::new("b".as_bytes(), 0, PageID(2)).deref())
+            .ok()
+            .unwrap();
+        sp.insert_cell_append(IndexCellOwned::new("d".as_bytes(), 0, PageID(3)).deref())
+            .ok()
+            .unwrap();
+        sp.insert_cell_append(IndexCellOwned::new("e".as_bytes(), 0, PageID(4)).deref())
+            .ok()
+            .unwrap();
+
+        //
+        let ordering: CompareFn = |a, b| a.cmp(b);
+
+        //
+        let internal = InternalPageMut::from_slotted_page(sp);
+        let index = internal.find_insertion_index("e".as_bytes(), ordering);
+        match index {
+            Ok(index) => println!("Index: {:?}", index),
+            Err(err) => println!("Error: {:?}", err),
+        }
+    }
 }

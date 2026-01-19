@@ -8,6 +8,8 @@ pub(crate) use slotted_page::{
     ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, SlottedPageMut, SlottedPageRef,
 };
 
+use crate::page::index_cell::IndexCellOwned;
+
 pub(crate) type RawPage = [u8; 4096];
 
 // TODO: May need to implement PageID resolver for pointer address and offset from page id
@@ -325,6 +327,14 @@ impl From<u8> for IndexLevel {
     fn from(value: u8) -> IndexLevel {
         IndexLevel::new(value)
     }
+}
+
+#[derive(Debug)]
+pub(super) struct InsertCtx {
+    pub(super) cell: IndexCellOwned,
+    pub(super) value_ptr: u64,
+    pub(super) prefix_offset: u16,
+    pub(super) insert_index: u16,
 }
 
 // TODO - Have mod tests for all files within

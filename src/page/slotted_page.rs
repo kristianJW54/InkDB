@@ -72,6 +72,7 @@ pub(crate) enum PageError {
     InvalidFreeEnd,
     InvalidFreeStart,
     TransferError,
+    InvalidSlotIndex,
     InsertError(InsertErrorCtx),
 }
 
@@ -493,8 +494,6 @@ impl<'a> SlottedPageMut<'a> {
         if end - fs < ENTRY_SIZE_U16 {
             return Err(PageError::NotEnoughFreeSpace);
         }
-
-        // TODO: IF High key we need to prepand at index 1
 
         debug_assert!(fs + ENTRY_SIZE_U16 <= PAGE_SIZE_U16);
         debug_assert!(fs >= HEADER_SIZE_U16);
@@ -1263,9 +1262,9 @@ impl SlotEntry {
     }
 }
 
-// TODO: This needs testing
 impl From<&'_ [u8]> for SlotEntry {
     fn from(bytes: &[u8]) -> Self {
+        assert_eq!(bytes.len(), ENTRY_SIZE);
         unsafe {
             let b_ptr = bytes.as_ptr();
             let offset = read_u16_le_unsafe(b_ptr);
@@ -1438,7 +1437,6 @@ mod tests {
         assert_eq!(page.memory_used_non_frag(), want_memory_usage);
     }
 
-    // TODO --------------- Need to fix
     #[test]
     fn remove_slot_range() {
         let mut raw_page: RawPage = [0u8; 4096];

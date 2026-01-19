@@ -6,7 +6,7 @@
 
 use std::cmp::Ordering;
 
-type CompareFn = fn(&[u8], &[u8]) -> std::cmp::Ordering;
+pub(crate) type CompareFn = fn(&[u8], &[u8]) -> std::cmp::Ordering;
 
 pub(crate) trait KeyType {}
 // Int8
@@ -49,7 +49,12 @@ fn op_stuff() {
     let a: i32 = 10;
     let b: i32 = 20;
 
-    // Now can we store this?
+    // Now can we store this? Multiple times?
     let function: CompareFn = op_class32.basic_comp();
-    println!("result {:?}", function(&a.to_le_bytes(), &b.to_le_bytes()))
+    let function_again: CompareFn = op_class32.basic_comp();
+    println!("result {:?}", function(&a.to_le_bytes(), &b.to_le_bytes()));
+    println!(
+        "result {:?}",
+        function_again(&a.to_le_bytes(), &b.to_le_bytes())
+    );
 }

@@ -40,7 +40,8 @@ const PREFIX_OFFSET: usize = 8;
 const KEY_LEN_OFFSET: usize = 10;
 const KEY_DATA_OFFSET: usize = 12;
 
-pub(super) struct IndexCellOwned(Box<[u8]>);
+#[derive(Debug)]
+pub(crate) struct IndexCellOwned(Box<[u8]>);
 
 // TODO: Need IndexCellOwned to be required for cell insertions at the page layer
 impl IndexCellOwned {
