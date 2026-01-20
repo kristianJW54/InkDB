@@ -96,16 +96,14 @@ impl<'page> IndexCellRef<'page> {
     pub(super) fn get_key(&self) -> &[u8] {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
 
-        // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the key data is at offset 10.
-        unsafe {
-            let cell_ptr = cell.as_ptr();
-            let key_len = read_u16_le_unsafe(cell_ptr.add(KEY_LEN_OFFSET)) as usize;
+        let key_len = u16::from_le_bytes([cell[KEY_LEN_OFFSET], cell[KEY_LEN_OFFSET + 1]]) as usize;
 
-            let key_ptr = cell_ptr.add(KEY_DATA_OFFSET);
+        let start = KEY_DATA_OFFSET;
+        let end = start + key_len;
 
-            return from_raw_parts(key_ptr, key_len);
-        }
+        &cell[start..end]
     }
+
     pub(super) fn get_value_ptr(&self) -> PageID {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
 

@@ -43,11 +43,21 @@ const RIGHT_SIBLING_OFFSET: usize = 8;
 
 pub(crate) struct InternalPageMut<'page> {
     page: SlottedPageMut<'page>,
+    ordering: CompareFn,
 }
 
 impl<'page> InternalPageMut<'page> {
-    pub(crate) fn from_slotted_page(page: SlottedPageMut<'page>) -> Self {
-        InternalPageMut { page }
+    pub(crate) fn from_slotted_page(
+        page: SlottedPageMut<'page>,
+        ordering: Option<CompareFn>,
+    ) -> Self {
+        match ordering {
+            Some(ordering) => Self { page, ordering },
+            None => {
+                let ordering: CompareFn = |a, b| a.cmp(b);
+                Self { page, ordering }
+            }
+        }
     }
 
     // TODO: Check if this is correct
@@ -139,14 +149,14 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
-    fn find_insertion_index(&self, key: &[u8], ordering: CompareFn) -> Result<SlotID> {
+    fn find_insertion_index(&self, key: &[u8]) -> Result<SlotID> {
         // TODO: We need to implement a binary search on slotted page and use it above a threshold for slot_count
 
         let page_ref = self.page.as_ref();
 
         for (i, se) in page_ref.slot_dir_ref().iter().enumerate() {
             let cell = IndexCellRef::from(page_ref, se);
-            match ordering(cell.get_key(), &key) {
+            match (self.ordering)(cell.get_key(), &key) {
                 Ordering::Less => continue,
                 Ordering::Equal => {
                     // FIXME: For now this is ok but we may want to handle duplicates a different way or error on this
@@ -178,12 +188,7 @@ impl<'page> InternalPageMut<'page> {
     }
 
     // TODO: We need to store an ordering ctx from the tree in the page so we can access it without passing it through function signatures
-    pub(crate) fn try_insert(
-        &mut self,
-        key: &[u8],
-        child_ptr: PageID,
-        ordering: CompareFn,
-    ) -> Result<()> {
+    pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
         // Find prefix offset and slice key
         let mut prefix_offset: u16 = 0;
         self.with_first_key(|first_key| {
@@ -201,7 +206,7 @@ impl<'page> InternalPageMut<'page> {
             self.page.check_contiguous_insert(cell.deref())?;
             //
             // Now we find the insert index
-            let insertion_index = self.find_insertion_index(key, ordering)?;
+            let insertion_index = self.find_insertion_index(key)?;
 
             // Can insert now
             let ctx = InsertCtx {
@@ -218,15 +223,15 @@ impl<'page> InternalPageMut<'page> {
     }
 
     fn insert(&mut self, ctx: InsertCtx) -> Result<()> {
-        //
         // We can try to allocate a cell - if we get an error, we can propagate the InsertErrorCtx back to the tree for it decide on a strategy
-        let entry = self.page.insert_cell(ctx.cell.deref(), 0)?;
-        todo!()
+        self.page.insert_cell(ctx.cell.deref(), ctx.insert_index)?;
+        Ok(())
     }
 }
 
 pub(crate) struct InternalPageRef<'page> {
     page: SlottedPageRef<'page>,
+    ordering: CompareFn,
 }
 
 impl Drop for InternalPageRef<'_> {
@@ -236,8 +241,17 @@ impl Drop for InternalPageRef<'_> {
 }
 
 impl<'page> InternalPageRef<'page> {
-    pub(crate) fn from_slotted_page(page: SlottedPageRef<'page>) -> Self {
-        Self { page }
+    pub(crate) fn from_slotted_page(
+        page: SlottedPageRef<'page>,
+        ordering: Option<CompareFn>,
+    ) -> Self {
+        match ordering {
+            Some(ordering) => Self { page, ordering },
+            None => {
+                let ordering: CompareFn = |a, b| a.cmp(b);
+                Self { page, ordering }
+            }
+        }
     }
 
     pub(super) fn cell_from_slot_entry(&'_ self, se: SlotEntry) -> InternalCellRef<'page> {
@@ -397,7 +411,7 @@ mod tests {
 
         drop(sp);
 
-        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
+        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
 
         let internal_cell = internal.cell_from_slot_id(SlotID(0)).ok().unwrap();
         let key = internal_cell.get_key();
@@ -416,7 +430,7 @@ mod tests {
 
         sp.set_flags(PageStates::PrefixCompressed.bit());
 
-        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
+        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
 
         assert_eq!(
             internal.flags().has_flag(PageStates::PrefixCompressed),
@@ -424,7 +438,8 @@ mod tests {
         );
     }
 
-    // TODO: Define a test to insert a prefix compressed key using try_insert()
+    // TODO: Clean up this test and make clear assertions
+    // TODO: Define a further test to find edge cases
     #[test]
     fn insert_prefix_compressed_key() {
         let mut page: RawPage = [0u8; PAGE_SIZE];
@@ -436,6 +451,34 @@ mod tests {
         sp.set_flags(PageStates::PrefixCompressed.bit());
 
         // Get internal page and insert a standard key so another key can be compressed against
+        // Start with standard key
+        sp.insert_cell_append(IndexCellOwned::new("00000123".as_bytes(), 0, PageID(1)).deref())
+            .ok()
+            .unwrap();
+        // Now we need to insert a cell using try insert on the page specific layer so we can find the prefix offset and insert the compressed key
+        let mut internal = InternalPageMut::from_slotted_page(sp, None);
+        let result = internal.try_insert("00000456".as_bytes(), PageID(2));
+        if result.is_ok() {
+            let ref_internal =
+                InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
+            let key = ref_internal.cell_from_slot_id(SlotID(1)).ok().unwrap();
+            println!("Key: {:?}", String::from_utf8_lossy(key.get_key()));
+        } else {
+            println!("Failed to insert key");
+        }
+
+        // If we try to insert another key with a different prefix we should get an adjusted compressed key
+        let mut internal =
+            InternalPageMut::from_slotted_page(SlottedPageMut::from_bytes(&mut page), None);
+        let result = internal.try_insert("00100678".as_bytes(), PageID(3));
+        if result.is_ok() {
+            let ref_internal =
+                InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
+            let key = ref_internal.cell_from_slot_id(SlotID(1)).ok().unwrap();
+            println!("Key: {:?}", String::from_utf8_lossy(key.get_key()));
+        } else {
+            println!("Failed to insert key");
+        }
     }
 
     #[test]
@@ -459,11 +502,10 @@ mod tests {
             .unwrap();
 
         //
-        let ordering: CompareFn = |a, b| a.cmp(b);
 
         //
-        let internal = InternalPageMut::from_slotted_page(sp);
-        let index = internal.find_insertion_index("e".as_bytes(), ordering);
+        let internal = InternalPageMut::from_slotted_page(sp, None);
+        let index = internal.find_insertion_index("e".as_bytes());
         match index {
             Ok(index) => println!("Index: {:?}", index),
             Err(err) => println!("Error: {:?}", err),

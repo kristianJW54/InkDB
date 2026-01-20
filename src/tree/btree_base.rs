@@ -80,7 +80,8 @@ impl<'blink> BInner<'blink> {
                     // We are still in internal and so must traverse down
                     page_id = page_handle.with_read(|page| {
                         let sp = SlottedPageRef::from_bytes(page);
-                        let internal_page = InternalPageRef::from_slotted_page(sp);
+                        // TODO: Need to pass in the CompareFn from the stored pointer in the tree
+                        let internal_page = InternalPageRef::from_slotted_page(sp, None);
                         internal_page.find_child_ptr(key)
                     })?;
 
@@ -117,7 +118,8 @@ impl<'blink> BInner<'blink> {
                 PageKind::IndexInternal => {
                     let child_ptr = page_handle.with_read(|page| {
                         let sp = SlottedPageRef::from_bytes(page);
-                        let internal = InternalPageRef::from_slotted_page(sp);
+                        // TODO: Need to pass in the CompareFn from the stored pointer in the tree
+                        let internal = InternalPageRef::from_slotted_page(sp, None);
                         internal.find_child_ptr(key)
                     })?;
                     page_id = child_ptr;
