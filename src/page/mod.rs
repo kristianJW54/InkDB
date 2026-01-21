@@ -1,5 +1,5 @@
 use std::ptr;
-mod index_cell;
+pub(crate) mod index_cell;
 pub(crate) mod internal_page;
 pub(crate) mod leaf;
 mod prefix_compression;

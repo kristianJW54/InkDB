@@ -1,60 +1,63 @@
+// TODO: Replace
+pub(crate) type CompareFn = fn(&[u8], &[u8]) -> std::cmp::Ordering;
+
 // For a key type in an index column - ascociated operator classes for that type can be made
 // Each operator class will define support functions one of which include a comparator function for semantic comparison
 // The index type of the operator class will define the support functions of the operator class
 // For our simple implementation we will only be providing a b-tree operator class and later on highlight the need to plug into a wider operator family through
 // a stub.
 
+// A key should ALWAYS be encoded before being used in an index structure or stored
+//
+// Type state ensures that only canonically encoded keys can reach the B-tree,
+// and the operator binds encoding and ordering into a single, inlinable unit.
+//
+
+use crate::page::SlottedPageRef;
+use crate::page::index_cell::IndexCellRef;
 use std::cmp::Ordering;
+use std::marker::PhantomData;
 
-pub(crate) type CompareFn = fn(&[u8], &[u8]) -> std::cmp::Ordering;
+// TODO: Need to finish this and integrate with the rest of the codebase
+// TODO: Need to think about how we want to move SearchKey<Raw> into SearchKey<Encoded>
+// TODO: Need to think about how this interacts with SlottedPageRef and how the operator class is stored in the b-tree
 
+// States
+pub(crate) struct Raw {}
+pub(crate) struct Encoded {}
+pub(crate) struct Decoded {}
+
+// Define a key type for index column types
 pub(crate) trait KeyType {}
-// Int8
-// Int16
-// Int32... for index column types
 
-struct Int32;
-impl KeyType for Int32 {}
-struct Int64;
-impl KeyType for Int64 {}
-
-pub(crate) trait BTreeOpClass {
+// Define an Operator Class for key types to implement
+pub(crate) trait OperatorClass: Sized {
+    type Value;
     type KeyType: KeyType;
 
-    fn basic_comp(&self) -> CompareFn;
-    // More support functions can be added here
+    const WIDTH: usize;
+
+    fn encode(value: &Self::Value, out: &mut [u8]);
+
+    fn compare_search_key<'a>(
+        a: SearchKeyType<'a, Self, Encoded>,
+        b: PageKeyType<'a, Self>,
+    ) -> Ordering;
+
+    fn compare_page_key<'a>(a: PageKeyType<'_, Self>, b: PageKeyType<'_, Self>) -> Ordering;
 }
 
-struct Int32Operator;
-
-impl BTreeOpClass for Int32Operator {
-    type KeyType = Int32;
-    fn basic_comp(&self) -> CompareFn {
-        |a, b| {
-            let a = i32::from_le_bytes(a.try_into().unwrap());
-            let b = i32::from_le_bytes(b.try_into().unwrap());
-            a.cmp(&b)
-        }
-    }
+//
+// PageKey is always encoded implicitly as it is stored in the page and must be encoded
+pub(crate) struct PageKeyType<'a, O: OperatorClass> {
+    cell: IndexCellRef<'a>,
+    _operator: PhantomData<O>,
 }
 
-#[test]
-fn op_stuff() {
-    let int32 = Int32;
-
-    let op_class32 = Int32Operator;
-
-    // Lets try and compare some numbers
-
-    let a: i32 = 10;
-    let b: i32 = 20;
-
-    // Now can we store this? Multiple times?
-    let function: CompareFn = op_class32.basic_comp();
-    let function_again: CompareFn = op_class32.basic_comp();
-    println!("result {:?}", function(&a.to_le_bytes(), &b.to_le_bytes()));
-    println!(
-        "result {:?}",
-        function_again(&a.to_le_bytes(), &b.to_le_bytes())
-    );
+pub(crate) struct SearchKeyType<'a, O: OperatorClass, S> {
+    key: &'a [u8],
+    _state: PhantomData<S>,
+    _operator: PhantomData<O>,
 }
+
+// Test with i32

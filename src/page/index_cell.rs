@@ -80,13 +80,13 @@ impl DerefMut for IndexCellOwned {
 // IndexCellRef holds a reference to the slotted page under a index page lifetime, it defines methods and behaviours only for referencing cell data
 // within the slotted page
 #[derive(Debug)]
-pub(super) struct IndexCellRef<'page> {
+pub(crate) struct IndexCellRef<'page> {
     cell: SlottedPageRef<'page>,
     slot_entry: SlotEntry,
 }
 
 impl<'page> IndexCellRef<'page> {
-    pub(super) fn from(page: SlottedPageRef<'page>, slot: SlotEntry) -> Self {
+    pub(crate) fn from(page: SlottedPageRef<'page>, slot: SlotEntry) -> Self {
         IndexCellRef {
             cell: page,
             slot_entry: slot,
@@ -100,8 +100,6 @@ impl<'page> IndexCellRef<'page> {
 
         let start = KEY_DATA_OFFSET;
         let end = start + key_len;
-
-        &cell[start..end]
     }
 
     pub(super) fn get_value_ptr(&self) -> PageID {
