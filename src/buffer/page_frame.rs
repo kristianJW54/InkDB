@@ -159,7 +159,7 @@ mod tests {
     fn get_internal_index_page() {
         let mut raw_page: RawPage = [0u8; 4096];
         let sp = SlottedPageMut::init_new(&mut raw_page, PageKind::Undefined.into());
-        let mut index_internal = InternalPageMut::from_slotted_page(sp, None);
+        let mut index_internal = InternalPageMut::from_slotted_page(sp);
 
         index_internal.set_page_type(PageKind::IndexInternal);
         println!("Internal kind = {:?}", index_internal.kind());
@@ -169,8 +169,7 @@ mod tests {
 
         frame
             .with_read(|rp| {
-                let ref_guard =
-                    InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp), None);
+                let ref_guard = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(rp));
                 println!("Page Kind {:?}", ref_guard.kind());
                 Ok::<(), PageFrameError>(())
             })

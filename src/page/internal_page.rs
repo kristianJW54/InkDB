@@ -3,13 +3,13 @@
 use super::index_cell::IndexCellOwned;
 use super::index_cell::{IndexCellMut, IndexCellRef};
 use super::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16};
-use crate::index::index_key_types::CompareFn;
 use crate::page::prefix_compression::find_prefix_offset;
 use crate::page::{
     self, ENTRY_SIZE, HEADER_SIZE, InsertCtx, PAGE_SIZE, PageError, SlotID, SlottedPageMut,
     SlottedPageRef, read_u16_le_unsafe,
 };
 use crate::page::{PageFlags, PageID, PageKind, PageStates, PageType, read_u64_le_unsafe};
+use crate::tree::CompareFn;
 use page::IndexLevel;
 use page::slotted_page::SlotEntry;
 use std::cmp::Ordering;
@@ -43,21 +43,11 @@ const RIGHT_SIBLING_OFFSET: usize = 8;
 
 pub(crate) struct InternalPageMut<'page> {
     page: SlottedPageMut<'page>,
-    ordering: CompareFn,
 }
 
 impl<'page> InternalPageMut<'page> {
-    pub(crate) fn from_slotted_page(
-        page: SlottedPageMut<'page>,
-        ordering: Option<CompareFn>,
-    ) -> Self {
-        match ordering {
-            Some(ordering) => Self { page, ordering },
-            None => {
-                let ordering: CompareFn = |a, b| a.cmp(b);
-                Self { page, ordering }
-            }
-        }
+    pub(crate) fn from_slotted_page(page: SlottedPageMut<'page>) -> Self {
+        Self { page }
     }
 
     // TODO: Check if this is correct
@@ -102,6 +92,10 @@ impl<'page> InternalPageMut<'page> {
         self.get_page_type().page_kind()
     }
 
+    pub(crate) fn flags(&self) -> PageFlags {
+        PageFlags::from(self.page.get_flags())
+    }
+
     pub(crate) fn level(&mut self) -> IndexLevel {
         IndexLevel::from(self.get_page_type().page_sub_type())
     }
@@ -131,7 +125,6 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
-    // TODO: Test and see if returning R is ok here
     pub(super) fn with_first_key<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&[u8]),
@@ -156,7 +149,15 @@ impl<'page> InternalPageMut<'page> {
 
         for (i, se) in page_ref.slot_dir_ref().iter().enumerate() {
             let cell = IndexCellRef::from(page_ref, se);
-            match (self.ordering)(cell.get_key(), &key) {
+
+            // The comparison key is a full key which has been encoded for bytewise comparison
+            // therefore we need to get a KeyView of the current iteration key and compare it with the search key
+
+            // ->
+
+            // TODO: Remove this
+            let ordering: CompareFn = |a, b| a.cmp(b);
+            match (ordering)(cell.get_key(), &key) {
                 Ordering::Less => continue,
                 Ordering::Equal => {
                     // FIXME: For now this is ok but we may want to handle duplicates a different way or error on this
@@ -187,39 +188,55 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
-    // TODO: We need to store an ordering ctx from the tree in the page so we can access it without passing it through function signatures
-    pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
-        // Find prefix offset and slice key
-        let mut prefix_offset: u16 = 0;
-        self.with_first_key(|first_key| {
-            let offset = find_prefix_offset(key, first_key);
-            debug_assert!(offset <= std::u16::MAX as usize);
-            prefix_offset = offset as u16;
-        })?;
+    pub(crate) fn prepare_index_cell(
+        &self,
+        key: &[u8],
+        child_ptr: PageID,
+    ) -> Result<IndexCellOwned> {
+        // Prepare the index cell for insertion into page
+        // Here we define the boundary for checks such as prefix compression and whether or not we can compress the key
+        // Then we create an IndexCellOwned cell to return
 
-        // If we have a prefix offset we can compress the key
-        if let Some(key) = key.get(prefix_offset as usize..) {
-            let cell = IndexCellOwned::new(key, prefix_offset, child_ptr);
+        // Get flags
+        if PageFlags::has_flag(&self.flags(), PageStates::PrefixCompressed) {
+            println!("yay");
+            // We can compress the key
+            let mut prefix_offset = 0;
+            self.with_first_key(|first_key| {
+                let offset = find_prefix_offset(key, first_key);
+                debug_assert!(offset <= std::u16::MAX as usize);
+                prefix_offset = offset;
+            })?;
 
-            // We check if we can insert before finding an index to insert into
-            // If we error we can propagate the InsertErrorCtx back up to the tree to decide
-            self.page.check_contiguous_insert(cell.deref())?;
-            //
-            // Now we find the insert index
-            let insertion_index = self.find_insertion_index(key)?;
-
-            // Can insert now
-            let ctx = InsertCtx {
-                cell,
-                value_ptr: child_ptr.0,
-                prefix_offset,
-                insert_index: insertion_index.0,
-            };
-            self.insert(ctx)
+            let suffix = &key[prefix_offset..];
+            println!("key: {:?}", key);
+            println!("suffix: {:?}", suffix);
+            return Ok(IndexCellOwned::new(suffix, prefix_offset as u16, child_ptr));
         } else {
-            // TODO: Need to have more robust error handling here
-            Err(InternalPageError::TryInsertionFailed)
+            // We cannot compress the key
+            Ok(IndexCellOwned::new(key, 0, child_ptr))
         }
+    }
+
+    pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
+        let prepared_cell = self.prepare_index_cell(key, child_ptr)?;
+
+        // We check if we can insert before finding an index to insert into
+        // If we error we can propagate the InsertErrorCtx back up to the tree to decide
+        self.page.check_contiguous_insert(prepared_cell.deref())?;
+        //
+        // Now we find the insert index
+        let insertion_index = self.find_insertion_index(prepared_cell.deref())?;
+
+        println!("prepared {:?}", prepared_cell);
+
+        // Can insert now
+        let ctx = InsertCtx {
+            cell: prepared_cell,
+            value_ptr: child_ptr.0,
+            insert_index: insertion_index.0,
+        };
+        self.insert(ctx)
     }
 
     fn insert(&mut self, ctx: InsertCtx) -> Result<()> {
@@ -231,7 +248,6 @@ impl<'page> InternalPageMut<'page> {
 
 pub(crate) struct InternalPageRef<'page> {
     page: SlottedPageRef<'page>,
-    ordering: CompareFn,
 }
 
 impl Drop for InternalPageRef<'_> {
@@ -241,17 +257,8 @@ impl Drop for InternalPageRef<'_> {
 }
 
 impl<'page> InternalPageRef<'page> {
-    pub(crate) fn from_slotted_page(
-        page: SlottedPageRef<'page>,
-        ordering: Option<CompareFn>,
-    ) -> Self {
-        match ordering {
-            Some(ordering) => Self { page, ordering },
-            None => {
-                let ordering: CompareFn = |a, b| a.cmp(b);
-                Self { page, ordering }
-            }
-        }
+    pub(crate) fn from_slotted_page(page: SlottedPageRef<'page>) -> Self {
+        Self { page }
     }
 
     pub(super) fn cell_from_slot_entry(&'_ self, se: SlotEntry) -> InternalCellRef<'page> {
@@ -411,7 +418,7 @@ mod tests {
 
         drop(sp);
 
-        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
+        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
 
         let internal_cell = internal.cell_from_slot_id(SlotID(0)).ok().unwrap();
         let key = internal_cell.get_key();
@@ -430,7 +437,7 @@ mod tests {
 
         sp.set_flags(PageStates::PrefixCompressed.bit());
 
-        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
+        let internal = InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
 
         assert_eq!(
             internal.flags().has_flag(PageStates::PrefixCompressed),
@@ -456,26 +463,26 @@ mod tests {
             .ok()
             .unwrap();
         // Now we need to insert a cell using try insert on the page specific layer so we can find the prefix offset and insert the compressed key
-        let mut internal = InternalPageMut::from_slotted_page(sp, None);
+        let mut internal = InternalPageMut::from_slotted_page(sp);
         let result = internal.try_insert("00000456".as_bytes(), PageID(2));
         if result.is_ok() {
             let ref_internal =
-                InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
+                InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
             let key = ref_internal.cell_from_slot_id(SlotID(1)).ok().unwrap();
-            println!("Key: {:?}", String::from_utf8_lossy(key.get_key()));
+            assert_eq!(key.get_key(), "456".as_bytes());
         } else {
             println!("Failed to insert key");
         }
 
         // If we try to insert another key with a different prefix we should get an adjusted compressed key
         let mut internal =
-            InternalPageMut::from_slotted_page(SlottedPageMut::from_bytes(&mut page), None);
+            InternalPageMut::from_slotted_page(SlottedPageMut::from_bytes(&mut page));
         let result = internal.try_insert("00100678".as_bytes(), PageID(3));
         if result.is_ok() {
             let ref_internal =
-                InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page), None);
+                InternalPageRef::from_slotted_page(SlottedPageRef::from_bytes(&page));
             let key = ref_internal.cell_from_slot_id(SlotID(1)).ok().unwrap();
-            println!("Key: {:?}", String::from_utf8_lossy(key.get_key()));
+            assert_eq!(key.get_key(), "100678".as_bytes());
         } else {
             println!("Failed to insert key");
         }
@@ -504,7 +511,7 @@ mod tests {
         //
 
         //
-        let internal = InternalPageMut::from_slotted_page(sp, None);
+        let internal = InternalPageMut::from_slotted_page(sp);
         let index = internal.find_insertion_index("e".as_bytes());
         match index {
             Ok(index) => println!("Index: {:?}", index),

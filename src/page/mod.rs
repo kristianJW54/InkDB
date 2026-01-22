@@ -1,6 +1,7 @@
 use std::ptr;
 pub(crate) mod index_cell;
 pub(crate) mod internal_page;
+pub(super) mod key_view;
 pub(crate) mod leaf;
 mod prefix_compression;
 mod slotted_page;
@@ -333,7 +334,6 @@ impl From<u8> for IndexLevel {
 pub(super) struct InsertCtx {
     pub(super) cell: IndexCellOwned,
     pub(super) value_ptr: u64,
-    pub(super) prefix_offset: u16,
     pub(super) insert_index: u16,
 }
 

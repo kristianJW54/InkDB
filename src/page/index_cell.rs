@@ -1,7 +1,9 @@
+use crate::page::key_view::KeyView;
+
 use super::internal_page::InternalPageError;
 use super::slotted_page::SlotEntry;
 use super::{
-    ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, PageID, SlottedPageMut, SlottedPageRef,
+    ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, PageID, SlotID, SlottedPageMut, SlottedPageRef,
     read_u16_le_unsafe, read_u64_le_unsafe, write_u16_le_unsafe,
 };
 use std::ops::{Deref, DerefMut};
@@ -100,6 +102,32 @@ impl<'page> IndexCellRef<'page> {
 
         let start = KEY_DATA_OFFSET;
         let end = start + key_len;
+
+        &cell[start..end]
+    }
+
+    pub(super) fn get_key_view(&self) -> KeyView {
+        //
+        let key = self.get_key();
+        let prefix_offset = self.get_prefix() as usize;
+
+        if prefix_offset == 0 {
+            return KeyView {
+                prefix: &[],
+                suffix: key,
+            };
+        }
+
+        // Get reference key
+        let ref_cell = self.cell.cell_slice_from_id(SlotID(0)).expect("ref key"); // TODO: Need to include proper error handling
+        let key_len =
+            u16::from_le_bytes([ref_cell[KEY_LEN_OFFSET], ref_cell[KEY_LEN_OFFSET + 1]]) as usize;
+        let ref_key = &ref_cell[KEY_DATA_OFFSET..KEY_DATA_OFFSET + key_len];
+
+        KeyView {
+            prefix: &ref_key[..prefix_offset],
+            suffix: key,
+        }
     }
 
     pub(super) fn get_value_ptr(&self) -> PageID {
@@ -152,6 +180,7 @@ impl<'a, 'page> IndexCellMut<'a, 'page> {
             return from_raw_parts(key_ptr, key_len);
         }
     }
+
     pub(super) fn get_value_ptr(&self) -> PageID {
         let cell = self.cell.cell_slice_from_entry(self.slot);
 
