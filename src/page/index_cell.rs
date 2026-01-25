@@ -45,7 +45,6 @@ const KEY_DATA_OFFSET: usize = 12;
 #[derive(Debug)]
 pub(crate) struct IndexCellOwned(Box<[u8]>);
 
-// TODO: Need IndexCellOwned to be required for cell insertions at the page layer
 impl IndexCellOwned {
     pub(crate) const MAX_INDEX_CELL_SIZE: usize = (PAGE_SIZE - HEADER_SIZE - ENTRY_SIZE) / 2;
 
@@ -119,7 +118,10 @@ impl<'page> IndexCellRef<'page> {
         }
 
         // Get reference key
-        let ref_cell = self.cell.cell_slice_from_id(SlotID(0)).expect("ref key"); // TODO: Need to include proper error handling
+        let ref_cell = self
+            .cell
+            .cell_slice_from_id(SlotID(0))
+            .expect("index page must have at least one reference key");
         let key_len =
             u16::from_le_bytes([ref_cell[KEY_LEN_OFFSET], ref_cell[KEY_LEN_OFFSET + 1]]) as usize;
         let ref_key = &ref_cell[KEY_DATA_OFFSET..KEY_DATA_OFFSET + key_len];
@@ -203,6 +205,7 @@ impl<'a, 'page> IndexCellMut<'a, 'page> {
     }
 
     // We only should be mutating the prefix - index keys are immutable and should not be changed unless they are removed and re-inserted.
+    // Why would we set a prefix? If the reference key is changed, the prefix should be updated to reflect the new key.
     pub(super) fn set_prefix(&mut self, prefix: u16) -> Result<()> {
         // TODO: Implement the set_prefix method
 

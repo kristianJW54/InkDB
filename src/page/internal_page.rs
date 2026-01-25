@@ -1,17 +1,17 @@
 //------------------------- Page specific types ------------------------------//
 
-use super::index_cell::IndexCellOwned;
-use super::index_cell::{IndexCellMut, IndexCellRef};
-use super::slotted_page::{ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16};
-use crate::page::prefix_compression::find_prefix_offset;
-use crate::page::{
-    self, ENTRY_SIZE, HEADER_SIZE, InsertCtx, PAGE_SIZE, PageError, SlotID, SlottedPageMut,
+use super::index_cell::{IndexCellMut, IndexCellOwned, IndexCellRef};
+use super::key_view::cmp_search;
+use super::prefix_compression::find_prefix_offset;
+use super::slotted_page::{
+    ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16, SIBLING_SPECIAL_SIZE_U16, SlotEntry,
+};
+use super::{
+    ENTRY_SIZE, HEADER_SIZE, IndexLevel, InsertCtx, PAGE_SIZE, PageError, SlotID, SlottedPageMut,
     SlottedPageRef, read_u16_le_unsafe,
 };
-use crate::page::{PageFlags, PageID, PageKind, PageStates, PageType, read_u64_le_unsafe};
+use super::{PageFlags, PageID, PageKind, PageStates, PageType, read_u64_le_unsafe};
 use crate::tree::CompareFn;
-use page::IndexLevel;
-use page::slotted_page::SlotEntry;
 use std::cmp::Ordering;
 use std::ops::Deref;
 use std::path::Prefix;
@@ -36,8 +36,7 @@ impl From<PageError> for InternalPageError {
     }
 }
 
-const INDEX_SPECIAL_SIZE: u16 = 16;
-const RIGHT_SIBLING_OFFSET: usize = 8;
+pub(super) const RIGHT_SIBLING_OFFSET: usize = 8;
 
 // TODO: Integrate Level into rest of IndexPage
 
@@ -65,14 +64,15 @@ impl<'page> InternalPageMut<'page> {
 
         self.page
             .set_page_type(PageType::new(PageKind::IndexInternal as u8, 0).into());
-        self.page.set_special_offset(INDEX_SPECIAL_SIZE);
+        self.page.set_prefix_offset();
 
         // Set free start to default HEADER_SIZE
 
         self.page.set_free_start(HEADER_SIZE as u16);
 
         // Adjust free_end for special offset
-        self.page.set_free_end(PAGE_SIZE_U16 - INDEX_SPECIAL_SIZE)?;
+        self.page
+            .set_free_end(PAGE_SIZE_U16 - SIBLING_SPECIAL_SIZE_U16)?;
 
         // Set lsn
         self.page.set_lsn(lsn);
@@ -108,23 +108,26 @@ impl<'page> InternalPageMut<'page> {
 
     // Special methods
 
+    // TODO: This needs to change to reference the special sibling space
     pub(crate) fn set_right_sibling(&mut self, page_id: PageID) {
         // Could use unsafe but since we are an owned struct building a SlottedPage we don't have a lock
         // and no others are waiting for access.
-        if let Ok(special) = self.page.get_special_mut() {
+        if let Ok(special) = self.page.get_prefix_entry_mut() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8]
                 .copy_from_slice(page_id.into().to_le_bytes().as_ref());
         }
     }
 
+    // TODO: This needs to change to reference the special sibling space
     pub(crate) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.page.get_special_ref() {
+        if let Ok(special) = self.page.get_prefix_entry() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
         } else {
             false
         }
     }
 
+    // TODO: This needs to change to the new prefix model
     pub(super) fn with_first_key<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&[u8]),
@@ -153,23 +156,17 @@ impl<'page> InternalPageMut<'page> {
             // The comparison key is a full key which has been encoded for bytewise comparison
             // therefore we need to get a KeyView of the current iteration key and compare it with the search key
 
-            // ->
-
-            // TODO: Remove this
-            let ordering: CompareFn = |a, b| a.cmp(b);
-            match (ordering)(cell.get_key(), &key) {
-                Ordering::Less => continue,
-                Ordering::Equal => {
-                    // FIXME: For now this is ok but we may want to handle duplicates a different way or error on this
-                    return Ok(SlotID(i as u16));
-                }
-                Ordering::Greater => return Ok(SlotID(i as u16)),
+            match cmp_search(key, cell.get_key_view()) {
+                Ordering::Less => return Ok(SlotID(i as u16)),
+                Ordering::Equal => return Ok(SlotID(i as u16)),
+                Ordering::Greater => continue,
             }
         }
 
         Ok(SlotID(self.page.get_slot_count() as u16))
     }
 
+    // TODO: This needs to change to the new prefix model
     pub(super) fn get_first_key(&self) -> Result<InternalCellRef<'_>> {
         let page_ref = self.page.as_ref();
 
@@ -198,6 +195,7 @@ impl<'page> InternalPageMut<'page> {
         // Then we create an IndexCellOwned cell to return
 
         // Get flags
+        // Try with a is_compressed method on slotted page
         if PageFlags::has_flag(&self.flags(), PageStates::PrefixCompressed) {
             println!("yay");
             // We can compress the key
@@ -218,6 +216,7 @@ impl<'page> InternalPageMut<'page> {
         }
     }
 
+    // TODO: Change this to work with the new prefix model
     pub(crate) fn try_insert(&mut self, key: &[u8], child_ptr: PageID) -> Result<()> {
         let prepared_cell = self.prepare_index_cell(key, child_ptr)?;
 
@@ -227,6 +226,7 @@ impl<'page> InternalPageMut<'page> {
         //
         // Now we find the insert index
         let insertion_index = self.find_insertion_index(prepared_cell.deref())?;
+        println!("insertion_index: {:?}", insertion_index);
 
         println!("prepared {:?}", prepared_cell);
 
@@ -278,7 +278,6 @@ impl<'page> InternalPageRef<'page> {
         if self.has_right_sibling() {
             //TODO: - For now we are returning wrapped PageError. We may want to handle the PageError differently and give a wrapped error with context
             let hkc = self.cell_from_slot_id(SlotID(0))?;
-            // TODO: Fix this
             let high_key_cell = InternalCellRef::from(hkc);
             high_key = true;
             if key > high_key_cell.get_key() {
@@ -294,6 +293,7 @@ impl<'page> InternalPageRef<'page> {
         // we can 'fall off' to the last child_ptr
         let mut last_child_ptr: Option<PageID> = None;
 
+        // NOTE: This iteration would be an abstracted method handled by slotted page where a threshold is used to determine the strategy iteration/binary search
         for se in self.page.slot_dir_ref().iter().skip(skip) {
             let cell = self.cell_from_slot_entry(se);
             last_child_ptr = Some(cell.get_child_ptr());
@@ -310,7 +310,7 @@ impl<'page> InternalPageRef<'page> {
     //
 
     pub(super) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.page.get_special_ref() {
+        if let Ok(special) = self.page.get_prefix_entry_ref() {
             special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
         } else {
             false
@@ -334,7 +334,7 @@ impl<'page> InternalPageRef<'page> {
     }
 
     pub(super) fn get_right_sibling(&self) -> Result<PageID> {
-        let special = self.page.get_special_ref()?;
+        let special = self.page.get_prefix_entry_ref()?;
         // TODO Add safety info
         unsafe {
             let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);
@@ -410,6 +410,7 @@ mod tests {
         let mut sp = SlottedPageMut::init_new(
             &mut page,
             PageType::new(PageKind::IndexInternal as u8, 0).into(),
+            0,
         );
 
         // Add a test cell
@@ -433,6 +434,7 @@ mod tests {
         let mut sp = SlottedPageMut::init_new(
             &mut page,
             PageType::new(PageKind::IndexInternal as u8, 0).into(),
+            0,
         );
 
         sp.set_flags(PageStates::PrefixCompressed.bit());
@@ -453,6 +455,7 @@ mod tests {
         let mut sp = SlottedPageMut::init_new(
             &mut page,
             PageType::new(PageKind::IndexInternal as u8, 0).into(),
+            0,
         );
 
         sp.set_flags(PageStates::PrefixCompressed.bit());
@@ -491,7 +494,7 @@ mod tests {
     #[test]
     fn find_insert_index() {
         let mut page: RawPage = [0u8; PAGE_SIZE];
-        let mut sp = SlottedPageMut::init_new(&mut page, PageKind::IndexInternal as u8);
+        let mut sp = SlottedPageMut::init_new(&mut page, PageKind::IndexInternal as u8, 0);
         sp.set_flags(PageStates::PrefixCompressed.bit());
 
         // Insert [a, b, d, e]

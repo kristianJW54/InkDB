@@ -1,6 +1,8 @@
 **Dev Log**
-> 20/01/2026 - 22:57 GMT
-### 001-Pages
+
+20/01/2026 - 22:57 GMT
+
+## 001-Pages
 
 This is the first dev log for the InkDB project. What is the purpose of this log? It is to mainly convey the process of thinking and outlining of logic behind some of the concepts in the project. It is an audit trail of sorts that I can come back to and learn from and see where certain mistakes were made or certain design decisions were developed.
 
@@ -36,3 +38,7 @@ A Slotted Page can only be given out by a FrameGaurd. The FrameGuard holds an ``
 So once we have and hold a Slotted Page, depending on the latch type we know that we can either read or write and are protected by the lifetime of the FrameGuard.
 
 // TODO: Explain the page speicifc layers and what we have been working on
+
+// TODO: Talk about deciding the layout, flags, special space header etc
+
+// TODOD: Prefix compression

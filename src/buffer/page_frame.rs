@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn get_internal_index_page() {
         let mut raw_page: RawPage = [0u8; 4096];
-        let sp = SlottedPageMut::init_new(&mut raw_page, PageKind::Undefined.into());
+        let sp = SlottedPageMut::init_new(&mut raw_page, PageKind::Undefined.into(), 0);
         let mut index_internal = InternalPageMut::from_slotted_page(sp);
 
         index_internal.set_page_type(PageKind::IndexInternal);

@@ -217,8 +217,9 @@ const FAST_PARENT: u8 = 0b000_0001;
 const DELETED: u8 = 0b000_0010;
 const HALF_DELETED: u8 = 0b000_0100;
 const INCOMPLETE_SPLIT: u8 = 0b000_1000;
-const HAS_OVERFLOW: u8 = 0b001_0000;
+const HIGH_KEY: u8 = 0b001_0000;
 const PREFIX_COMPRESSED: u8 = 0b010_0000;
+const SIBLING: u8 = 0b100_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PageStates {
@@ -227,8 +228,9 @@ pub(crate) enum PageStates {
     Deleted,
     HalfDeleted,
     IncompleteSplit,
-    HasOverflow,
-    PrefixCompressed,
+    HighKey,
+    PrefixCompressed, // TODO: Need to think if we need this as we can infer from the PrefixOffset if we are compressed or not
+    Sibling,
 }
 
 impl PageStates {
@@ -238,8 +240,9 @@ impl PageStates {
             DELETED => Self::Deleted,
             HALF_DELETED => Self::HalfDeleted,
             INCOMPLETE_SPLIT => Self::IncompleteSplit,
-            HAS_OVERFLOW => Self::HasOverflow,
+            HIGH_KEY => Self::HighKey,
             PREFIX_COMPRESSED => Self::PrefixCompressed,
+            SIBLING => Self::Sibling,
             _ => return None,
         })
     }
@@ -250,8 +253,9 @@ impl PageStates {
             Self::Deleted => DELETED,
             Self::HalfDeleted => HALF_DELETED,
             Self::IncompleteSplit => INCOMPLETE_SPLIT,
-            Self::HasOverflow => HAS_OVERFLOW,
+            Self::HighKey => HIGH_KEY,
             Self::PrefixCompressed => PREFIX_COMPRESSED,
+            Self::Sibling => SIBLING,
             _ => return NO_STATE,
         }
     }
@@ -292,8 +296,8 @@ impl PageFlags {
         if self.has_flag(PageStates::IncompleteSplit) {
             flags.push(PageStates::IncompleteSplit)
         }
-        if self.has_flag(PageStates::HasOverflow) {
-            flags.push(PageStates::HasOverflow)
+        if self.has_flag(PageStates::HighKey) {
+            flags.push(PageStates::HighKey)
         }
 
         flags
@@ -346,7 +350,7 @@ mod tests {
     #[test]
     fn test_bits() {
         let state_1 = PageStates::FastParent;
-        let state_2 = PageStates::HasOverflow;
+        let state_2 = PageStates::HighKey;
 
         let mut page_flags = PageFlags::new(state_1);
         page_flags.set_flag(state_2);
