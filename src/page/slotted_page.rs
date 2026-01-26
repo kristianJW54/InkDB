@@ -622,6 +622,10 @@ impl<'a> SlottedPageMut<'a> {
         Ok(())
     }
 
+    pub(super) fn has_prefix(&self) -> bool {
+        self.bytes[TRAILER_OFFSET + 1] != 0 || self.bytes[TRAILER_OFFSET + 2] != 0
+    }
+
     pub(super) fn check_contiguous_insert(&self, cell: &[u8]) -> Result<()> {
         let contiguous = self.free_contiguous_space();
         let frag = self.get_fragmented_space();
@@ -1010,14 +1014,6 @@ impl<'a> SlottedPageRef<'a> {
     }
 
     #[inline(always)]
-    pub(super) fn get_prefix_offset(&self) -> u16 {
-        unsafe {
-            let ptr = self.bytes.as_ptr().add(PREFIX_OFFSET);
-            read_u16_le_unsafe(ptr)
-        }
-    }
-
-    #[inline(always)]
     pub(super) fn get_flags(&self) -> u8 {
         self.bytes[FLAGS_OFFSET]
     }
@@ -1135,6 +1131,10 @@ impl<'a> SlottedPageRef<'a> {
                 length: read_u16_le_unsafe(b_ptr.add(2)),
             }
         }
+    }
+
+    pub(super) fn has_prefix(&self) -> bool {
+        self.bytes[TRAILER_OFFSET + 1] != 0 || self.bytes[TRAILER_OFFSET + 2] != 0
     }
     // Cell area methods
 }

@@ -1,5 +1,6 @@
 use std::ptr;
 pub(crate) mod index_cell;
+pub(crate) mod index_page;
 pub(crate) mod internal_page;
 pub(super) mod key_view;
 pub(crate) mod leaf;

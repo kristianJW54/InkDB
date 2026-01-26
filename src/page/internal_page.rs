@@ -116,6 +116,7 @@ impl<'page> InternalPageMut<'page> {
     fn get_prefix_key(&self) -> IndexCellRef {
         let page_ref = self.page.as_ref();
         let entry = page_ref.get_prefix_entry();
+
         IndexCellRef::from(page_ref, entry)
     }
 
@@ -140,7 +141,6 @@ impl<'page> InternalPageMut<'page> {
         Ok(SlotID(self.page.get_slot_count() as u16))
     }
 
-    // TODO: Need to test new prefix implementation
     pub(crate) fn prepare_index_cell(
         &self,
         key: &[u8],
@@ -154,8 +154,6 @@ impl<'page> InternalPageMut<'page> {
         if PageFlags::has_flag(&self.flags(), PageStates::PrefixCompressed) {
             println!("yay");
             // We can compress the key
-            // TODO: We simply need to get the prefix entry and compare it to the key
-            // If the prefix offset is none then we error as we have mismatched page logic
             let prefix_key = self.get_prefix_key();
             let offset = find_prefix_offset(key, prefix_key.get_key());
             debug_assert!(offset <= std::u16::MAX as usize);
