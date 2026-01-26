@@ -7,6 +7,22 @@ pub(crate) struct KeyView<'a> {
     pub(crate) suffix: &'a [u8],
 }
 
+impl KeyView<'_> {
+    #[inline]
+    pub(super) fn len(&self) -> usize {
+        self.prefix.len() + self.suffix.len()
+    }
+
+    #[inline]
+    pub(super) fn byte_at(&self, i: usize) -> u8 {
+        if i < self.prefix.len() {
+            self.prefix[i]
+        } else {
+            self.suffix[i - self.prefix.len()]
+        }
+    }
+}
+
 pub(super) fn cmp_p2p(a: &KeyView<'_>, b: &KeyView<'_>) -> Ordering {
     // If both keys have no prefix, compare suffixes
     if a.prefix.len() == 0 && b.prefix.len() == 0 {

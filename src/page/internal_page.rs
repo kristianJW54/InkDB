@@ -64,15 +64,10 @@ impl<'page> InternalPageMut<'page> {
 
         self.page
             .set_page_type(PageType::new(PageKind::IndexInternal as u8, 0).into());
-        self.page.set_prefix_offset();
 
         // Set free start to default HEADER_SIZE
 
         self.page.set_free_start(HEADER_SIZE as u16);
-
-        // Adjust free_end for special offset
-        self.page
-            .set_free_end(PAGE_SIZE_U16 - SIBLING_SPECIAL_SIZE_U16)?;
 
         // Set lsn
         self.page.set_lsn(lsn);
@@ -110,39 +105,18 @@ impl<'page> InternalPageMut<'page> {
 
     // TODO: This needs to change to reference the special sibling space
     pub(crate) fn set_right_sibling(&mut self, page_id: PageID) {
-        // Could use unsafe but since we are an owned struct building a SlottedPage we don't have a lock
-        // and no others are waiting for access.
-        if let Ok(special) = self.page.get_prefix_entry_mut() {
-            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8]
-                .copy_from_slice(page_id.into().to_le_bytes().as_ref());
-        }
+        todo!()
     }
 
     // TODO: This needs to change to reference the special sibling space
     pub(crate) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.page.get_prefix_entry() {
-            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
-        } else {
-            false
-        }
+        todo!()
     }
 
-    // TODO: This needs to change to the new prefix model
-    pub(super) fn with_first_key<F>(&self, f: F) -> Result<()>
-    where
-        F: FnOnce(&[u8]),
-    {
+    fn get_prefix_key(&self) -> IndexCellRef {
         let page_ref = self.page.as_ref();
-
-        if self.has_right_sibling() {
-            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(1))?;
-            let cell = IndexCellRef::from(page_ref, se);
-            Ok(f(cell.get_key()))
-        } else {
-            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(0))?;
-            let cell = IndexCellRef::from(page_ref, se);
-            Ok(f(cell.get_key()))
-        }
+        let entry = page_ref.get_prefix_entry();
+        IndexCellRef::from(page_ref, entry)
     }
 
     fn find_insertion_index(&self, key: &[u8]) -> Result<SlotID> {
@@ -166,25 +140,7 @@ impl<'page> InternalPageMut<'page> {
         Ok(SlotID(self.page.get_slot_count() as u16))
     }
 
-    // TODO: This needs to change to the new prefix model
-    pub(super) fn get_first_key(&self) -> Result<InternalCellRef<'_>> {
-        let page_ref = self.page.as_ref();
-
-        if self.has_right_sibling() {
-            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(1))?;
-            let cell = InternalCellRef {
-                inner: IndexCellRef::from(page_ref, se),
-            };
-            Ok(cell)
-        } else {
-            let se = page_ref.slot_dir_ref().get_slot_entry(SlotID(0))?;
-            let cell = InternalCellRef {
-                inner: IndexCellRef::from(page_ref, se),
-            };
-            Ok(cell)
-        }
-    }
-
+    // TODO: Need to test new prefix implementation
     pub(crate) fn prepare_index_cell(
         &self,
         key: &[u8],
@@ -195,21 +151,19 @@ impl<'page> InternalPageMut<'page> {
         // Then we create an IndexCellOwned cell to return
 
         // Get flags
-        // Try with a is_compressed method on slotted page
         if PageFlags::has_flag(&self.flags(), PageStates::PrefixCompressed) {
             println!("yay");
             // We can compress the key
-            let mut prefix_offset = 0;
-            self.with_first_key(|first_key| {
-                let offset = find_prefix_offset(key, first_key);
-                debug_assert!(offset <= std::u16::MAX as usize);
-                prefix_offset = offset;
-            })?;
+            // TODO: We simply need to get the prefix entry and compare it to the key
+            // If the prefix offset is none then we error as we have mismatched page logic
+            let prefix_key = self.get_prefix_key();
+            let offset = find_prefix_offset(key, prefix_key.get_key());
+            debug_assert!(offset <= std::u16::MAX as usize);
 
-            let suffix = &key[prefix_offset..];
+            let suffix = &key[offset..];
             println!("key: {:?}", key);
             println!("suffix: {:?}", suffix);
-            return Ok(IndexCellOwned::new(suffix, prefix_offset as u16, child_ptr));
+            return Ok(IndexCellOwned::new(suffix, offset as u16, child_ptr));
         } else {
             // We cannot compress the key
             Ok(IndexCellOwned::new(key, 0, child_ptr))
@@ -244,6 +198,11 @@ impl<'page> InternalPageMut<'page> {
         self.page.insert_cell(ctx.cell.deref(), ctx.insert_index)?;
         Ok(())
     }
+
+    // ----------------------------
+    // Handle splits and transfers
+    // TODO: Need to implement split page methods for rebuilding pages and maintaining compression
+    // Does it belong to this layer?
 }
 
 pub(crate) struct InternalPageRef<'page> {
@@ -310,11 +269,7 @@ impl<'page> InternalPageRef<'page> {
     //
 
     pub(super) fn has_right_sibling(&self) -> bool {
-        if let Ok(special) = self.page.get_prefix_entry_ref() {
-            special[RIGHT_SIBLING_OFFSET..RIGHT_SIBLING_OFFSET + 8] != [0u8; 8]
-        } else {
-            false
-        }
+        todo!()
     }
 
     pub(super) fn get_page_type(&self) -> PageType {
@@ -334,13 +289,7 @@ impl<'page> InternalPageRef<'page> {
     }
 
     pub(super) fn get_right_sibling(&self) -> Result<PageID> {
-        let special = self.page.get_prefix_entry_ref()?;
-        // TODO Add safety info
-        unsafe {
-            let b_ptr = special.as_ptr().add(RIGHT_SIBLING_OFFSET);
-            let sib = read_u64_le_unsafe(b_ptr);
-            return Ok(sib.into());
-        }
+        todo!()
     }
 }
 

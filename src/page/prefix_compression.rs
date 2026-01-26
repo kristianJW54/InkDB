@@ -7,6 +7,8 @@
 
 use std::iter;
 
+use crate::page::key_view::KeyView;
+
 // Function to calculate the longest common prefix of two byte slices
 // https://users.rust-lang.org/t/how-to-find-common-prefix-of-two-byte-slices-effectively/25815/3
 //
@@ -51,6 +53,15 @@ pub(super) fn find_prefix_offset(reference_key: &[u8], source_key: &[u8]) -> usi
     } else {
         lcp_calculate::<256>(reference_key, source_key)
     }
+}
+
+pub(super) fn common_prefix_len(ref_key: &[u8], source_key: KeyView<'_>) -> usize {
+    let max = std::cmp::min(ref_key.len(), source_key.len());
+    let mut i = 0;
+    while i < max && ref_key[i] == source_key.byte_at(i) {
+        i += 1;
+    }
+    i
 }
 
 #[test]
