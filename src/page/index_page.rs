@@ -10,9 +10,17 @@ use crate::page::{
 
 use super::{PageID, PageKind, PageType, SlottedPageMut, SlottedPageRef};
 use std::cmp::Ordering;
+use std::ops::Deref;
 
 pub(super) enum IndexPageError {
     //
+    SlottedPageError(super::PageError),
+}
+
+impl From<super::PageError> for IndexPageError {
+    fn from(err: super::PageError) -> Self {
+        Self::SlottedPageError(err)
+    }
 }
 
 /// IndexPageRef holds the SlottedPageRef which is under the lifetime of the guard, given out by the PageFrame
@@ -42,6 +50,33 @@ impl<'page> IndexPageRef<'page> {
 
     pub(super) fn page_sub_type(&self) -> u8 {
         self.get_page_type().page_sub_type()
+    }
+
+    pub(super) fn prefix_compressed(&self) -> bool {
+        if self.flags().has_flag(PageStates::PrefixCompressed) {
+            debug_assert!(self.bytes.has_prefix());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn first_insertion_prefix_compression(&self) -> bool {
+        let sc = self.bytes.get_slot_count();
+        let compressed = self.prefix_compressed();
+        if self.flags().has_flag(PageStates::HighKey) && compressed {
+            match sc {
+                1 => true,
+                _ => false,
+            }
+        } else if compressed {
+            match sc {
+                0 => true,
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     pub(super) fn get_left_sibling(&self) -> Option<PageID> {
@@ -101,9 +136,7 @@ impl<'page> IndexPageRef<'page> {
         // Here we define checks such as prefix compression and whether or not we can compress the key
         // Then we create an IndexCellOwned to return
 
-        if self.flags().has_flag(PageStates::PrefixCompressed) {
-            debug_assert!(self.bytes.has_prefix());
-
+        if self.prefix_compressed() {
             let prefix_key = IndexCellRef::from(self.bytes, self.bytes.get_prefix_entry());
             let offset = find_prefix_offset(key, prefix_key.get_key());
 
@@ -116,8 +149,6 @@ impl<'page> IndexPageRef<'page> {
             return IndexCellOwned::new(key, 0, child_ptr);
         }
     }
-
-    // TODO: Implement try_insert() and test
 
     // TODO: Need to implement the get prefix cells and cell handling - think about how we want to interact with IndexCell
 }
@@ -189,5 +220,54 @@ impl<'page> IndexPageMut<'page> {
         }
     }
 
+    pub(super) fn try_insert(
+        &mut self,
+        key: &[u8],
+        child_ptr: PageID,
+    ) -> Result<(), IndexPageError> {
+        // We need to know if this is the first insertion and if we should compress the key first
+        let is_first = self.as_ref().first_insertion_prefix_compression();
+
+        // For prefix compression - if we are first and should compress then we need to insert the reference key now so the cell
+        // key can be compressed and added
+        if is_first {
+            // We need to also insert a reference key which isn't compressed for the prefix space
+            let se = self.bytes.insert_cell_raw(key)?;
+            // Now we update the prefix slot entry
+            self.bytes.set_prefix_entry(se)?;
+        }
+
+        // FIXME: We re-borrow the page - later we should optimise this
+        let page_ref = self.as_ref();
+
+        // Before we do any work we can simply check if we can insert the key
+        let prepared_cell = page_ref.prepare_cell_for_insertion(key, child_ptr);
+        self.bytes.check_contiguous_insert(prepared_cell.deref())?;
+
+        let insert_index = page_ref.find_insertion_index(key)?;
+
+        let ctx = InsertCtx {
+            cell: prepared_cell,
+            value_ptr: child_ptr.0,
+            insert_index: insert_index.0,
+        };
+
+        self.insert(ctx)
+    }
+
+    fn insert(&mut self, ctx: InsertCtx) -> Result<(), IndexPageError> {
+        self.bytes.insert_cell(ctx.cell.deref(), ctx.insert_index)?;
+        Ok(())
+    }
+
     // TODO: Continue implementing IndexPageMut - Need to be able to handle prefix compression runtime decisions
 }
+
+#[derive(Debug)]
+pub(super) struct InsertCtx {
+    pub(super) cell: IndexCellOwned,
+    pub(super) value_ptr: u64,
+    pub(super) insert_index: u16,
+}
+
+// TODO: Need to do tests

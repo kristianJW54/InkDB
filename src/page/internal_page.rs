@@ -1,13 +1,14 @@
 //------------------------- Page specific types ------------------------------//
 
 use super::index_cell::{IndexCellMut, IndexCellOwned, IndexCellRef};
+use super::index_page::InsertCtx;
 use super::key_view::cmp_search;
 use super::prefix_compression::find_prefix_offset;
 use super::slotted_page::{
     ENTRY_SIZE_U16, InsertErrorCtx, PAGE_SIZE_U16, SIBLING_SPECIAL_SIZE_U16, SlotEntry,
 };
 use super::{
-    ENTRY_SIZE, HEADER_SIZE, IndexLevel, InsertCtx, PAGE_SIZE, PageError, SlotID, SlottedPageMut,
+    ENTRY_SIZE, HEADER_SIZE, IndexLevel, PAGE_SIZE, PageError, SlotID, SlottedPageMut,
     SlottedPageRef, read_u16_le_unsafe,
 };
 use super::{PageFlags, PageID, PageKind, PageStates, PageType, read_u64_le_unsafe};

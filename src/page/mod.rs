@@ -331,13 +331,6 @@ impl From<u8> for IndexLevel {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct InsertCtx {
-    pub(super) cell: IndexCellOwned,
-    pub(super) value_ptr: u64,
-    pub(super) insert_index: u16,
-}
-
 // TODO - Have mod tests for all files within
 
 #[cfg(test)]

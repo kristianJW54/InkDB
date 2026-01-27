@@ -12,8 +12,21 @@ use std::ptr::read;
 use std::{ptr, slice};
 
 /*
+
+Slotted Page Layout:
+
 SLOTTED PAGE is dumb - it only knows how to make structural changes to the universal base layout
-| header | slot array growing upward | free space | cells growing downward |
+
+|----------------|--------------|--------------------------------------------|-----------------------|
+|     Header     |  Slot Array  |           Cell Region (Free Space)         |      Trailer Space    |
+|    24 bytes    |   Variable   |                   Variable                 |        24 bytes       |
+|----------------|--------------|--------------------------------------------|-----------------------|
+|                |    Entries   |                                            |  Prefix  | Sibling    |
+|                |    0..n      |-->Free start                               |  Entry   | Ptrs       |
+|                |    4 bytes   |                                 Free end<--|  8 bytes | 8 bytes    |
+|----------------|--------------|--------------------------------------------|-----------------------|
+
+
 */
 
 //--------------------- Header -------------------------//
@@ -26,7 +39,7 @@ SLOTTED PAGE is dumb - it only knows how to make structural changes to the unive
 // -- Flag bit: 1 byte
 // -- Free_start: 2 bytes
 // -- Free_end  : 2 bytes
-// -- Special_start: 2 bytes // NOTE: We can change this to something else if we use sibling flags
+// -- Spare Space: 2 bytes // FIXME: Later we can use this - I'm thinking we expand flags to u16 and have a spare u8 or even we expand page type to u16
 // -- Fragmented_space: 2 bytes
 // -- TransactionID: 4 bytes (Oldest unpruned XMAX on page)
 
