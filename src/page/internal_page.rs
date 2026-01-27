@@ -36,8 +36,6 @@ impl From<PageError> for InternalPageError {
     }
 }
 
-pub(super) const RIGHT_SIBLING_OFFSET: usize = 8;
-
 // TODO: Integrate Level into rest of IndexPage
 
 pub(crate) struct InternalPageMut<'page> {

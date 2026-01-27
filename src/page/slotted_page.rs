@@ -64,6 +64,7 @@ pub(crate) const TRAILER_OFFSET_U16: u16 = TRAILER_OFFSET as u16;
 
 pub(super) const SIBLING_SPECIAL_SIZE: usize = 16;
 pub(super) const SIBLING_SPECIAL_SIZE_U16: u16 = SIBLING_SPECIAL_SIZE as u16;
+pub(super) const RIGHT_SIBLING_OFFSET: usize = 8;
 
 pub(crate) const PREFIX_SIZE: usize = size_of::<SlotEntry>();
 pub(crate) const PREFIX_SIZE_U16: u16 = PREFIX_OFFSET_SIZE as u16;
@@ -118,6 +119,14 @@ impl<'a> SlottedPageMut<'a> {
     // TODO: Can we remove duplicate ref methods in mut now?
     pub(crate) fn as_ref(&'a self) -> SlottedPageRef<'a> {
         SlottedPageRef::from_bytes(&*self.bytes)
+    }
+
+    pub(super) unsafe fn as_ptr(&self) -> *const u8 {
+        self.bytes.as_ptr()
+    }
+
+    pub(super) unsafe fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.bytes.as_mut_ptr()
     }
 
     pub(crate) fn wipe_page(&mut self) {
