@@ -1,10 +1,15 @@
 use crate::page::{
-    PAGE_SIZE, PageFlags, PageStates, read_u64_le_unsafe,
+    PAGE_SIZE, PageFlags, PageStates, SlotID,
+    index_cell::{IndexCellOwned, IndexCellRef},
+    key_view::cmp_search,
+    prefix_compression::find_prefix_offset,
+    read_u64_le_unsafe,
     slotted_page::{HEADER_SIZE_U16, PREFIX_SIZE, RIGHT_SIBLING_OFFSET, TRAILER_OFFSET},
     write_u64_le_unsafe,
 };
 
 use super::{PageID, PageKind, PageType, SlottedPageMut, SlottedPageRef};
+use std::cmp::Ordering;
 
 pub(super) enum IndexPageError {
     //
@@ -59,6 +64,60 @@ impl<'page> IndexPageRef<'page> {
             if id.0 == 0 { None } else { Some(id) }
         }
     }
+
+    pub(super) fn find_insertion_index(&self, key: &[u8]) -> Result<SlotID, IndexPageError> {
+        // We need to take into account the presence of a potential high key - if we have one, then
+        // we need to iterate from index 1
+
+        let mut skip = 0;
+
+        if self.flags().has_flag(PageStates::HighKey) {
+            debug_assert!(self.get_right_sibling().is_some());
+            skip = 1;
+        }
+
+        for (i, se) in self.bytes.slot_dir_ref().iter().enumerate().skip(skip) {
+            let cell = IndexCellRef::from(self.bytes, se);
+
+            // The comparison key is a full key which has been encoded for bytewise comparison
+            // therefore we need to get a keyview of the current iteration key and compare it with the search key
+
+            match cmp_search(key, cell.get_key_view()) {
+                Ordering::Less => return Ok(SlotID(i as u16)),
+                Ordering::Equal => return Ok(SlotID(i as u16)),
+                Ordering::Greater => continue,
+            }
+        }
+
+        Ok(SlotID(self.bytes.get_slot_count() as u16))
+    }
+
+    pub(super) fn prepare_cell_for_insertion(
+        &self,
+        key: &[u8],
+        child_ptr: PageID,
+    ) -> IndexCellOwned {
+        // Prepare a cell for insertion into page
+        // Here we define checks such as prefix compression and whether or not we can compress the key
+        // Then we create an IndexCellOwned to return
+
+        if self.flags().has_flag(PageStates::PrefixCompressed) {
+            debug_assert!(self.bytes.has_prefix());
+
+            let prefix_key = IndexCellRef::from(self.bytes, self.bytes.get_prefix_entry());
+            let offset = find_prefix_offset(key, prefix_key.get_key());
+
+            debug_assert!(offset <= std::u16::MAX as usize);
+
+            let suffix = &key[offset..];
+            return IndexCellOwned::new(suffix, offset as u16, child_ptr);
+        } else {
+            // We cannot compress the key
+            return IndexCellOwned::new(key, 0, child_ptr);
+        }
+    }
+
+    // TODO: Implement try_insert() and test
 
     // TODO: Need to implement the get prefix cells and cell handling - think about how we want to interact with IndexCell
 }

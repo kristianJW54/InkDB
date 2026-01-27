@@ -220,7 +220,6 @@ const HALF_DELETED: u8 = 0b000_0100;
 const INCOMPLETE_SPLIT: u8 = 0b000_1000;
 const HIGH_KEY: u8 = 0b001_0000;
 const PREFIX_COMPRESSED: u8 = 0b010_0000;
-const SIBLING: u8 = 0b100_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PageStates {
@@ -231,7 +230,6 @@ pub(crate) enum PageStates {
     IncompleteSplit,
     HighKey,
     PrefixCompressed, // TODO: Need to think if we need this as we can infer from the PrefixOffset if we are compressed or not
-    Sibling,
 }
 
 impl PageStates {
@@ -243,7 +241,6 @@ impl PageStates {
             INCOMPLETE_SPLIT => Self::IncompleteSplit,
             HIGH_KEY => Self::HighKey,
             PREFIX_COMPRESSED => Self::PrefixCompressed,
-            SIBLING => Self::Sibling,
             _ => return None,
         })
     }
@@ -256,7 +253,6 @@ impl PageStates {
             Self::IncompleteSplit => INCOMPLETE_SPLIT,
             Self::HighKey => HIGH_KEY,
             Self::PrefixCompressed => PREFIX_COMPRESSED,
-            Self::Sibling => SIBLING,
             _ => return NO_STATE,
         }
     }

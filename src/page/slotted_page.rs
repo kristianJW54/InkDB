@@ -1039,6 +1039,13 @@ impl<'a> SlottedPageRef<'a> {
         SlotRef::new(sd_ptr, fs - HEADER_SIZE_U16)
     }
 
+    #[inline(always)]
+    pub(super) fn get_slot_count(&self) -> u16 {
+        let fs = self.free_start();
+        debug_assert!(fs >= HEADER_SIZE_U16);
+        (fs - HEADER_SIZE_U16) / ENTRY_SIZE_U16
+    }
+
     // Cell Methods
 
     //NOTE: We need generic methods which can take a block of bytes and insert them into the free space
