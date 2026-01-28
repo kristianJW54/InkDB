@@ -161,7 +161,6 @@ impl PageType {
     pub(crate) fn new(pt: u8, pst: u8) -> Self {
         let page_type = pt & PAGE_TYPE_MASK;
         let sub_type = (pst & PAGE_TYPE_MASK) << 4;
-        println!("state {:0b}", (page_type | sub_type));
         Self(page_type | sub_type)
     }
 

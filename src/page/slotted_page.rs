@@ -308,6 +308,11 @@ impl<'a> SlottedPageMut<'a> {
 
     #[inline(always)]
     pub(super) fn free_contiguous_space(&self) -> u16 {
+        println!(
+            "free end {:?} - free start {:?}",
+            self.free_end(),
+            self.free_start()
+        );
         self.free_end() - self.free_start()
     }
 
@@ -681,8 +686,8 @@ impl<'a> SlottedPageMut<'a> {
 
         let cell_start_offset = free_end - cell.len() as u16;
 
-        assert!(cell.len() <= u16::MAX as usize);
-        assert!(cell_start_offset <= u16::MAX);
+        debug_assert!(cell.len() <= u16::MAX as usize);
+        debug_assert!(cell_start_offset <= u16::MAX);
 
         let entry = SlotEntry {
             offset: cell_start_offset,

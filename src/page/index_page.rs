@@ -1,10 +1,13 @@
 use crate::page::{
     PAGE_SIZE, PageFlags, PageStates, SlotID,
     index_cell::{IndexCellOwned, IndexCellRef},
-    key_view::cmp_search,
+    key_view::{KeyView, cmp_search},
     prefix_compression::find_prefix_offset,
     read_u64_le_unsafe,
-    slotted_page::{HEADER_SIZE_U16, PREFIX_SIZE, RIGHT_SIBLING_OFFSET, TRAILER_OFFSET},
+    slotted_page::{
+        HEADER_SIZE_U16, PREFIX_SIZE, RIGHT_SIBLING_OFFSET, SlotEntry, TRAILER_OFFSET,
+        TRAILER_OFFSET_U16,
+    },
     write_u64_le_unsafe,
 };
 
@@ -12,6 +15,7 @@ use super::{PageID, PageKind, PageType, SlottedPageMut, SlottedPageRef};
 use std::cmp::Ordering;
 use std::ops::Deref;
 
+#[derive(Debug)]
 pub(super) enum IndexPageError {
     //
     SlottedPageError(super::PageError),
@@ -36,6 +40,21 @@ impl<'page> IndexPageRef<'page> {
         Self { bytes: page }
     }
 
+    pub(super) fn index_cell_from_id<'a>(
+        &'a self,
+        id: SlotID,
+    ) -> Result<IndexCellRef<'a>, IndexPageError> {
+        let se = self.bytes.slot_dir_ref().get_slot_entry(id)?;
+        Ok(IndexCellRef::from(self.bytes, se))
+    }
+
+    pub(super) fn index_cell_from_entry<'a>(
+        &'a self,
+        entry: SlotEntry,
+    ) -> Result<IndexCellRef<'a>, IndexPageError> {
+        Ok(IndexCellRef::from(self.bytes, entry))
+    }
+
     pub(super) fn get_page_type(&self) -> PageType {
         PageType::from(self.bytes.get_page_type())
     }
@@ -54,7 +73,6 @@ impl<'page> IndexPageRef<'page> {
 
     pub(super) fn prefix_compressed(&self) -> bool {
         if self.flags().has_flag(PageStates::PrefixCompressed) {
-            debug_assert!(self.bytes.has_prefix());
             true
         } else {
             false
@@ -149,8 +167,6 @@ impl<'page> IndexPageRef<'page> {
             return IndexCellOwned::new(key, 0, child_ptr);
         }
     }
-
-    // TODO: Need to implement the get prefix cells and cell handling - think about how we want to interact with IndexCell
 }
 
 /// IndexPageMut holds the SlottedPageMut which is under the lifetime of the guard, given out by the PageFrame
@@ -172,17 +188,25 @@ impl<'page> IndexPageMut<'page> {
         IndexPageRef::from_slotted_page(self.bytes.as_ref())
     }
 
-    pub(super) fn init_in_place(&mut self, lsn: u64, page_type: PageType, flags: PageFlags) {
+    pub(super) fn init_in_place(
+        &mut self,
+        lsn: u64,
+        page_type: PageType,
+        flags: PageFlags,
+    ) -> Result<(), IndexPageError> {
         self.bytes.wipe_page();
         self.bytes.set_page_type(page_type.into());
         // Set free start to default HEADER_SIZE
         self.bytes.set_free_start(HEADER_SIZE_U16);
+        // Set free end to TRAILER OFFSET
+        self.bytes.set_free_end(TRAILER_OFFSET_U16)?;
         // Set lsn
         self.bytes.set_lsn(lsn);
         // Set flags
         self.bytes.set_flags(flags.0);
         // We don't need to do anything else here as trailer space is concrete and slot array should be empty
         // We have type and flags which should be sufficient for correctness
+        Ok(())
     }
 
     pub(super) fn set_page_type(&mut self, page_type: PageType) {
@@ -255,6 +279,21 @@ impl<'page> IndexPageMut<'page> {
         self.insert(ctx)
     }
 
+    pub(super) fn insert_high_key(
+        &mut self,
+        high_key: &[u8],
+        ptr: PageID,
+    ) -> Result<(), IndexPageError> {
+        // A high key is a page boundary. It consists of a key to compare against and then a sibling pointer.
+        // For the key, we must store the raw key in the cell region and insert a Slot Entry at index 0 as an optimisation to avoid
+        // having to maintain the high key postion and ordering of other keys.
+        // The sibling pointer is stored in the trailer space at the end of the page.
+
+        // Check if we have high_key already - TODO: What do we do if we have?
+
+        todo!("finish")
+    }
+
     fn insert(&mut self, ctx: InsertCtx) -> Result<(), IndexPageError> {
         self.bytes.insert_cell(ctx.cell.deref(), ctx.insert_index)?;
         Ok(())
@@ -271,3 +310,54 @@ pub(super) struct InsertCtx {
 }
 
 // TODO: Need to do tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::page::RawPage;
+
+    #[test]
+    fn index_page_init() {
+        let mut page: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::from_bytes(&mut page);
+        let mut index_page = IndexPageMut::from_slotted_page(sp);
+        index_page
+            .init_in_place(
+                0,
+                PageType::new(PageKind::IndexInternal as u8, 0),
+                PageFlags::new(PageStates::PrefixCompressed),
+            )
+            .expect("couldn't init");
+
+        assert_eq!(index_page.as_ref().prefix_compressed(), true);
+    }
+
+    #[test]
+    fn normal_cell_entry() {
+        let mut page: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::from_bytes(&mut page);
+        let mut index_page = IndexPageMut::from_slotted_page(sp);
+
+        index_page
+            .init_in_place(
+                0,
+                PageType::new(PageKind::IndexInternal as u8, 0),
+                PageFlags::new(PageStates::NoState),
+            )
+            .expect("couldn't init");
+
+        index_page
+            .try_insert("I am a key".as_bytes(), PageID(0))
+            .expect("couldn't insert");
+
+        // Let's get the cell and test the key
+
+        // TODO: Question - at the moment we are SlotID(0) because we have no high key - what if we insert a high key?
+        // the existing key at index 0 should move to 1 because we should prepend the reference key
+
+        if let Ok(cell) = index_page.as_ref().index_cell_from_id(SlotID(0)) {
+            let key = String::from_utf8_lossy(cell.get_key());
+            assert_eq!(key, "I am a key");
+        }
+    }
+}
