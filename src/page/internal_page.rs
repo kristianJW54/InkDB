@@ -1,6 +1,6 @@
 //------------------------- Page specific types ------------------------------//
 
-use super::index_cell::{IndexCellMut, IndexCellOwned, IndexCellRef};
+use super::index_cell::{IndexCellOwned, IndexCellRef};
 use super::index_page::InsertCtx;
 use super::key_view::cmp_search;
 use super::prefix_compression::find_prefix_offset;
@@ -46,13 +46,6 @@ pub(crate) struct InternalPageMut<'page> {
 impl<'page> InternalPageMut<'page> {
     pub(crate) fn from_slotted_page(page: SlottedPageMut<'page>) -> Self {
         Self { page }
-    }
-
-    // TODO: Check if this is correct
-    pub(super) fn cell_mut_from_slot_entry(&mut self, se: SlotEntry) -> InternalCellMut<'_, 'page> {
-        InternalCellMut {
-            inner: IndexCellMut::from(&mut self.page, se),
-        }
     }
 
     pub(crate) fn init_in_place(&mut self, lsn: u64) -> Result<()> {
@@ -116,7 +109,7 @@ impl<'page> InternalPageMut<'page> {
         let page_ref = self.page.as_ref();
         let entry = page_ref.get_prefix_entry();
 
-        IndexCellRef::from(page_ref, entry)
+        IndexCellRef::from(page_ref, entry, 1)
     }
 
     fn find_insertion_index(&self, key: &[u8]) -> Result<SlotID> {
@@ -125,7 +118,8 @@ impl<'page> InternalPageMut<'page> {
         let page_ref = self.page.as_ref();
 
         for (i, se) in page_ref.slot_dir_ref().iter().enumerate() {
-            let cell = IndexCellRef::from(page_ref, se);
+            // FIXME: For optimisation we may just want to catch i == 0 and for the rest use 1
+            let cell = IndexCellRef::from(page_ref, se, i as u16);
 
             // The comparison key is a full key which has been encoded for bytewise comparison
             // therefore we need to get a KeyView of the current iteration key and compare it with the search key
@@ -219,7 +213,7 @@ impl<'page> InternalPageRef<'page> {
 
     pub(super) fn cell_from_slot_entry(&'_ self, se: SlotEntry) -> InternalCellRef<'page> {
         InternalCellRef {
-            inner: IndexCellRef::from(self.page, se),
+            inner: IndexCellRef::from(self.page, se, 1),
         }
     }
 
@@ -316,31 +310,6 @@ impl<'page> InternalCellRef<'page> {
         // TODO: Think about any checks specific to internal page cells we need to
         self.inner.get_prefix()
     }
-}
-
-pub(super) struct InternalCellMut<'a, 'page> {
-    inner: IndexCellMut<'a, 'page>,
-}
-
-impl<'a, 'page> InternalCellMut<'a, 'page> {
-    fn get_key(&self) -> &[u8] {
-        // TODO: Fix the error returning here
-        self.inner.get_key()
-    }
-
-    fn get_child_ptr(&self) -> PageID {
-        // TODO: Fix the error returning here
-        // TODO: Think about any checks specific to internal page cells we need to
-        self.inner.get_value_ptr()
-    }
-
-    fn get_prefix(&self) -> u16 {
-        // TODO: Fix the error returning here
-        // TODO: Think about any checks specific to internal page cells we need to
-        self.inner.get_prefix()
-    }
-
-    // TODO: Make set_prefix method() once we have one on IndexCellMut
 }
 
 #[cfg(test)]

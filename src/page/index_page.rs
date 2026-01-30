@@ -45,14 +45,15 @@ impl<'page> IndexPageRef<'page> {
         id: SlotID,
     ) -> Result<IndexCellRef<'a>, IndexPageError> {
         let se = self.bytes.slot_dir_ref().get_slot_entry(id)?;
-        Ok(IndexCellRef::from(self.bytes, se))
+        Ok(IndexCellRef::from(self.bytes, se, id.0))
     }
 
     pub(super) fn index_cell_from_entry<'a>(
         &'a self,
         entry: SlotEntry,
+        slot_index: u16,
     ) -> Result<IndexCellRef<'a>, IndexPageError> {
-        Ok(IndexCellRef::from(self.bytes, entry))
+        Ok(IndexCellRef::from(self.bytes, entry, slot_index))
     }
 
     pub(super) fn get_page_type(&self) -> PageType {
@@ -130,7 +131,7 @@ impl<'page> IndexPageRef<'page> {
         }
 
         for (i, se) in self.bytes.slot_dir_ref().iter().enumerate().skip(skip) {
-            let cell = IndexCellRef::from(self.bytes, se);
+            let cell = IndexCellRef::from(self.bytes, se, 1); // NOTE: We always skip the high key so we can just use 1 meaning our high key bool on InxexCell will be false
 
             // The comparison key is a full key which has been encoded for bytewise comparison
             // therefore we need to get a keyview of the current iteration key and compare it with the search key
@@ -149,13 +150,15 @@ impl<'page> IndexPageRef<'page> {
         &self,
         key: &[u8],
         child_ptr: PageID,
+        insertion_index: u16,
     ) -> IndexCellOwned {
         // Prepare a cell for insertion into page
         // Here we define checks such as prefix compression and whether or not we can compress the key
         // Then we create an IndexCellOwned to return
 
         if self.prefix_compressed() {
-            let prefix_key = IndexCellRef::from(self.bytes, self.bytes.get_prefix_entry());
+            let prefix_key =
+                IndexCellRef::from(self.bytes, self.bytes.get_prefix_entry(), insertion_index);
             let offset = find_prefix_offset(key, prefix_key.get_key());
 
             debug_assert!(offset <= std::u16::MAX as usize);
@@ -264,11 +267,12 @@ impl<'page> IndexPageMut<'page> {
         // FIXME: We re-borrow the page - later we should optimise this
         let page_ref = self.as_ref();
 
-        // Before we do any work we can simply check if we can insert the key
-        let prepared_cell = page_ref.prepare_cell_for_insertion(key, child_ptr);
-        self.bytes.check_contiguous_insert(prepared_cell.deref())?;
-
         let insert_index = page_ref.find_insertion_index(key)?;
+
+        // FIXME: We want to be able to check if we can insert before finding the insertion index - or maybe we can use the insert index in a split error?
+        // NOTE: Because we know high_key inserts don't use this - we could even just put insert_index as 1 which will work
+        let prepared_cell = page_ref.prepare_cell_for_insertion(key, child_ptr, insert_index.0);
+        self.bytes.check_contiguous_insert(prepared_cell.deref())?;
 
         let ctx = InsertCtx {
             cell: prepared_cell,
@@ -289,9 +293,43 @@ impl<'page> IndexPageMut<'page> {
         // having to maintain the high key postion and ordering of other keys.
         // The sibling pointer is stored in the trailer space at the end of the page.
 
-        // Check if we have high_key already - TODO: What do we do if we have?
+        // We never update a high key in place - a high key promises:
+        // "No key >= the high key will ever appear on this page, if we have such a key -> ptr to the next page"
+        // Because the right sibling page will always be the same page ptr we can make that assertion (left sibling pages are more complex)
 
-        todo!("finish")
+        debug_assert!(
+            PageFlags::has_flag(
+                &PageFlags::from(self.bytes.get_flags()),
+                PageStates::HighKey
+            ) != true
+        );
+
+        // Check if we have the space to insert (we should as inserting a high_key is done usually on a page structural boundary)
+        self.bytes.check_contiguous_insert(high_key)?;
+
+        // Insert the high key into the cell region
+        self.bytes.insert_cell(high_key, 0)?;
+
+        // Update sibling pointer
+        self.set_right_sibling(ptr);
+
+        // Update flags
+        let mut flags: PageFlags = PageFlags::from(self.bytes.get_flags());
+        flags.set_flag(PageStates::HighKey);
+        self.bytes.set_flags(flags.into_bits());
+
+        debug_assert!(
+            cmp_search(
+                high_key,
+                self.as_ref()
+                    .index_cell_from_id(SlotID(self.bytes.get_slot_count() - 1))
+                    .ok()
+                    .unwrap()
+                    .get_key_view()
+            ) != Ordering::Less
+        );
+
+        Ok(())
     }
 
     fn insert(&mut self, ctx: InsertCtx) -> Result<(), IndexPageError> {
@@ -352,12 +390,76 @@ mod tests {
 
         // Let's get the cell and test the key
 
-        // TODO: Question - at the moment we are SlotID(0) because we have no high key - what if we insert a high key?
-        // the existing key at index 0 should move to 1 because we should prepend the reference key
-
         if let Ok(cell) = index_page.as_ref().index_cell_from_id(SlotID(0)) {
             let key = String::from_utf8_lossy(cell.get_key());
             assert_eq!(key, "I am a key");
+        }
+    }
+
+    #[test]
+    fn high_key_entry() {
+        let mut page: RawPage = [0u8; 4096];
+        let sp = SlottedPageMut::from_bytes(&mut page);
+        let mut index_page = IndexPageMut::from_slotted_page(sp);
+
+        index_page
+            .init_in_place(
+                0,
+                PageType::new(PageKind::IndexInternal as u8, 0),
+                PageFlags::new(PageStates::NoState),
+            )
+            .expect("couldn't init");
+
+        index_page
+            .try_insert("I am a key".as_bytes(), PageID(0))
+            .expect("couldn't insert");
+
+        index_page
+            .insert_high_key("This is a high key".as_bytes(), PageID(2))
+            .expect("couldn't insert");
+
+        if let Ok(cell) = index_page.as_ref().index_cell_from_id(SlotID(0)) {
+            let key = String::from_utf8_lossy(cell.get_key());
+            assert_eq!(key, "This is a high key");
+            let key_view = cell.get_key_view();
+            assert_eq!(key_view.suffix.len(), 0);
+            assert_eq!(
+                String::from_utf8_lossy(key_view.prefix),
+                "This is a high key"
+            );
+        }
+
+        // Test we also flipped the high key state
+        assert_eq!(
+            index_page.as_ref().flags().has_flag(PageStates::HighKey),
+            true
+        );
+
+        // Test we also have a right sibling with correct page id
+        assert_eq!(index_page.as_ref().get_right_sibling().unwrap(), PageID(2));
+
+        // Test inserting another key and make sure high key is still correct
+        //
+        index_page
+            .try_insert("Another key".as_bytes(), PageID(0))
+            .expect("couldn't insert");
+
+        if let Ok(cell) = index_page.as_ref().index_cell_from_id(SlotID(0)) {
+            let key = String::from_utf8_lossy(cell.get_key());
+            assert_eq!(key, "This is a high key");
+            let key_view = cell.get_key_view();
+            assert_eq!(key_view.suffix.len(), 0);
+            assert_eq!(
+                String::from_utf8_lossy(key_view.prefix),
+                "This is a high key"
+            );
+        }
+
+        // Final check is if the newest key is at SlotID(1)
+
+        if let Ok(cell) = index_page.as_ref().index_cell_from_id(SlotID(1)) {
+            let key = String::from_utf8_lossy(cell.get_key());
+            assert_eq!(key, "Another key");
         }
     }
 }

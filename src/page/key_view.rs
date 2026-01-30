@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 //
 
+#[derive(Debug)]
 pub(crate) struct KeyView<'a> {
     pub(crate) prefix: &'a [u8],
     pub(crate) suffix: &'a [u8],

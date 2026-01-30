@@ -3,8 +3,8 @@ use crate::page::key_view::KeyView;
 use super::internal_page::InternalPageError;
 use super::slotted_page::SlotEntry;
 use super::{
-    ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, PageID, SlotID, SlottedPageMut, SlottedPageRef,
-    read_u16_le_unsafe, read_u64_le_unsafe, write_u16_le_unsafe,
+    ENTRY_SIZE, HEADER_SIZE, PAGE_SIZE, PageError, PageFlags, PageID, PageStates, SlotID,
+    SlottedPageMut, SlottedPageRef, read_u16_le_unsafe, read_u64_le_unsafe, write_u16_le_unsafe,
 };
 use std::ops::{Deref, DerefMut};
 use std::slice::from_raw_parts;
@@ -84,18 +84,26 @@ impl DerefMut for IndexCellOwned {
 pub(crate) struct IndexCellRef<'page> {
     cell: SlottedPageRef<'page>,
     slot_entry: SlotEntry,
+    pub high_key: bool,
 }
 
 impl<'page> IndexCellRef<'page> {
-    pub(crate) fn from(page: SlottedPageRef<'page>, slot: SlotEntry) -> Self {
+    pub(crate) fn from(page: SlottedPageRef<'page>, slot: SlotEntry, slot_index: u16) -> Self {
+        let high_key = PageFlags::has_flag(&PageFlags::from(page.get_flags()), PageStates::HighKey)
+            && slot_index == 0;
         IndexCellRef {
             cell: page,
             slot_entry: slot,
+            high_key,
         }
     }
 
     pub(super) fn get_key(&self) -> &[u8] {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
+
+        if self.high_key {
+            return cell;
+        }
 
         let key_len = u16::from_le_bytes([cell[KEY_LEN_OFFSET], cell[KEY_LEN_OFFSET + 1]]) as usize;
 
@@ -108,6 +116,14 @@ impl<'page> IndexCellRef<'page> {
     pub(super) fn get_key_view(&self) -> KeyView {
         //
         let key = self.get_key();
+
+        if self.high_key {
+            return KeyView {
+                prefix: key,
+                suffix: &[],
+            };
+        }
+
         let prefix_offset = self.get_prefix() as usize;
 
         if prefix_offset == 0 {
@@ -145,57 +161,6 @@ impl<'page> IndexCellRef<'page> {
 
     pub(super) fn get_prefix(&self) -> u16 {
         let cell = self.cell.cell_slice_from_entry(self.slot_entry);
-
-        // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the prefix is at offset 8.
-        unsafe {
-            let cell_ptr = cell.as_ptr().add(PREFIX_OFFSET);
-            read_u16_le_unsafe(cell_ptr)
-        }
-    }
-}
-
-pub(super) struct IndexCellMut<'a, 'page> {
-    cell: &'a mut SlottedPageMut<'page>,
-    slot: SlotEntry,
-}
-
-impl<'a, 'page> IndexCellMut<'a, 'page> {
-    pub(super) fn from(page: &'a mut SlottedPageMut<'page>, slot: SlotEntry) -> Self {
-        IndexCellMut {
-            cell: page,
-            slot: slot,
-        }
-    }
-
-    pub(super) fn get_key(&self) -> &[u8] {
-        let cell = self.cell.cell_slice_from_entry(self.slot);
-
-        // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the key data is at offset 10.
-        unsafe {
-            let cell_ptr = cell.as_ptr();
-            let key_len = read_u16_le_unsafe(cell_ptr.add(KEY_LEN_OFFSET)) as usize;
-
-            let key_ptr = cell_ptr.add(KEY_DATA_OFFSET);
-
-            debug_assert!(KEY_DATA_OFFSET + key_len <= cell.len());
-
-            return from_raw_parts(key_ptr, key_len);
-        }
-    }
-
-    pub(super) fn get_value_ptr(&self) -> PageID {
-        let cell = self.cell.cell_slice_from_entry(self.slot);
-
-        // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the child pointer is at offset 0.
-        unsafe {
-            let cell_ptr = cell.as_ptr().add(CHILD_PTR_OFFSET);
-            let page_id = read_u64_le_unsafe(cell_ptr);
-            PageID::from(page_id)
-        }
-    }
-
-    pub(super) fn get_prefix(&self) -> u16 {
-        let cell = self.cell.cell_slice_from_entry(self.slot);
 
         // SAFETY: The cell is guaranteed to be at least 12 bytes long, and the prefix is at offset 8.
         unsafe {

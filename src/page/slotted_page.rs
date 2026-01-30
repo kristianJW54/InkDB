@@ -308,11 +308,6 @@ impl<'a> SlottedPageMut<'a> {
 
     #[inline(always)]
     pub(super) fn free_contiguous_space(&self) -> u16 {
-        println!(
-            "free end {:?} - free start {:?}",
-            self.free_end(),
-            self.free_start()
-        );
         self.free_end() - self.free_start()
     }
 
@@ -1109,7 +1104,6 @@ impl<'a> SlottedPageRef<'a> {
 
         let offset = se.offset as usize;
         let length = se.length as usize;
-        println!("offset: {}, length: {}", offset, length);
 
         debug_assert!(offset + length <= PAGE_SIZE);
 

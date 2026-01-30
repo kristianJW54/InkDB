@@ -265,6 +265,10 @@ impl PageFlags {
         Self(pf.bit())
     }
 
+    pub(crate) fn into_bits(self) -> u8 {
+        self.0
+    }
+
     pub(crate) fn set_flag(&mut self, pf: PageStates) {
         self.0 |= pf.bit()
     }
